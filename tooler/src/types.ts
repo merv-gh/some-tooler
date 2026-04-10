@@ -1,16 +1,44 @@
-// TDD State Machine
-export type TddState = 'WRITE_TEST' | 'VERIFY_RED' | 'IMPLEMENT' | 'VERIFY_GREEN' | 'REFACTOR' | 'VERIFY_REFACTOR' | 'DONE';
+// ── TDD State Machine Types ──────────────────────────────────
+
+/** Top-level states */
+export type TddPhase = 'writeTest' | 'verifyRed' | 'implement' | 'verifyGreen' | 'refactor' | 'verifyRefactor' | 'done' | 'skipped';
+
+/** Sub-states for verification phases */
+export type VerifyRedStep = 'checkFileExists' | 'checkCompiles' | 'checkTestRuns' | 'checkFailsOnAssertion' | 'checkTestSanity';
+export type VerifyGreenStep = 'checkCompiles' | 'checkTestRuns' | 'checkAllPass';
+export type VerifyRefactorStep = 'checkCompiles' | 'checkTestRuns' | 'checkAllPass';
+
+/** Guard check result */
+export interface GuardResult {
+  ok: boolean;
+  name: string;
+  detail: string;
+  fatal?: boolean;  // if true, skip task entirely
+}
+
+/** Ordered list of guards for a verification phase */
+export interface VerifyChain {
+  name: string;
+  checks: GuardCheck[];
+}
+
+export interface GuardCheck {
+  name: string;
+  run: (ctx: StateContext) => GuardResult | Promise<GuardResult>;
+}
+
+// ── Domain Types ─────────────────────────────────────────────
 
 export interface Task {
   id: string;
   title: string;
   description: string;
-  testHint: string;       // what the test should verify
-  implementHint: string;  // guidance for implementation
+  testHint: string;
+  implementHint: string;
   filesToCreate?: string[];
   filesToModify?: string[];
-  testFile: string;       // where the test goes
-  sourceFile: string;     // where the implementation goes
+  testFile: string;
+  sourceFile: string;
 }
 
 export interface Plan {
@@ -22,9 +50,18 @@ export interface TestResult {
   passed: boolean;
   totalTests: number;
   failedTests: number;
-  newTestsAdded: boolean;
+  passedTests: number;
   output: string;
   errorSummary: string;
+  /** Parsed individual test failures */
+  failures: TestFailure[];
+}
+
+export interface TestFailure {
+  testName: string;
+  expected: string;
+  received: string;
+  line: string;
 }
 
 export interface ModelResponse {
@@ -32,30 +69,41 @@ export interface ModelResponse {
   tokensUsed: number;
 }
 
+export interface CodeBlock {
+  filename?: string;
+  code: string;
+  language?: string;
+}
+
+// ── State Context ────────────────────────────────────────────
+
 export interface StateContext {
   task: Task;
-  state: TddState;
+  phase: TddPhase;
   attempt: number;
-  maxAttempts: number;
+  phaseAttempts: Record<TddPhase, number>;
   lastTestResult: TestResult | null;
   lastModelOutput: string;
-  existingCode: Record<string, string>;  // filepath -> content
+  lastGuardResults: GuardResult[];
+  existingCode: Record<string, string>;
   history: HistoryEntry[];
 }
 
 export interface HistoryEntry {
-  state: TddState;
+  phase: TddPhase;
   action: string;
-  result: string;
+  guardResults?: GuardResult[];
   timestamp: number;
 }
+
+// ── Config ───────────────────────────────────────────────────
 
 export interface ToolerConfig {
   ollamaUrl: string;
   model: string;
   appDir: string;
   planFile: string;
-  maxAttemptsPerState: number;
+  maxAttemptsPerPhase: number;
   maxAttemptsPerTask: number;
   testCommand: string;
   unitTestCommand: string;

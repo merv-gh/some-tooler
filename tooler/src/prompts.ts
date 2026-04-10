@@ -1,21 +1,33 @@
-import type { StateContext, Task } from './types.js';
+import type { StateContext } from './types.js';
 
-/** System prompt — keeps the model focused and structured */
+// ═══════════════════════════════════════════════════════════════
+// SYSTEM PROMPT — shared across all phases
+// ═══════════════════════════════════════════════════════════════
+
 export const SYSTEM_PROMPT = `You are a precise coding assistant. You write TypeScript/React code.
 
 RULES:
 1. Output ONLY code blocks. No explanations unless asked.
-2. Each code block must have the filename as the language tag: \`\`\`src/components/Foo.tsx
+2. Each code block MUST have the filename as the language tag:
+   \`\`\`src/components/Foo.tsx
 3. Write minimal, working code. No placeholders or TODOs.
 4. Use existing imports and patterns from provided context.
 5. Do NOT modify files you weren't asked to modify.
-6. If you need to create a new file, output a code block with the full path.`;
 
-/** Prompt: write a failing test (RED phase) */
+CRITICAL TEST RULES:
+- Tests must be SATISFIABLE — a correct implementation must be able to make them pass.
+- NEVER write expect(value).not.toBe(same_value) — that can never pass.
+- NEVER write expect(true).toBe(false) — that's a contradiction.
+- Tests should assert BEHAVIOR, not hardcoded identity.
+- RED means: test compiles, runs, fails because implementation is missing/incomplete.
+- RED does NOT mean: test has syntax errors, import failures, or logical contradictions.`;
+
+// ═══════════════════════════════════════════════════════════════
+// WRITE TEST (RED phase)
+// ═══════════════════════════════════════════════════════════════
+
 export function promptWriteTest(ctx: StateContext): string {
   const { task } = ctx;
-  const existingFiles = formatExistingCode(ctx);
-
   return `TASK: ${task.title}
 ${task.description}
 
@@ -25,46 +37,95 @@ SOURCE FILE: ${task.sourceFile}
 WHAT TO TEST:
 ${task.testHint}
 
-${existingFiles}
+${formatExistingCode(ctx)}
 
-Write a vitest test file for ${task.testFile}.
-The test MUST:
-- Import from the source file (which doesn't exist yet or is incomplete)
+Write a vitest test file for \`${task.testFile}\`.
+
+Requirements:
+- Import from the source file: \`${task.sourceFile}\`
 - Use describe/it/expect from vitest
-- Test the behavior described above
-- Be specific with assertions (not just "toBeDefined")
-- The test SHOULD FAIL because the implementation doesn't exist yet
+- Tests must be SATISFIABLE — a correct implementation CAN make them pass
+- Each test should assert behavior: input → expected output
+- Do NOT use .not.toBe() with the same value on both sides
+- The tests should fail NOW because the implementation is missing/incomplete
+- Include at least 2 distinct test cases
 
-Output the complete test file as a single code block tagged with the filename.`;
+Output the complete test file as a single code block tagged with the filename.
+If you need a stub source file so imports resolve, output that too (with minimal exports).`;
 }
 
-/** Prompt: fix a test that doesn't compile or has wrong structure */
-export function promptFixTest(ctx: StateContext): string {
-  const { task, lastTestResult } = ctx;
-  const existingFiles = formatExistingCode(ctx);
+// ═══════════════════════════════════════════════════════════════
+// FIX TEST (failed VERIFY_RED)
+// ═══════════════════════════════════════════════════════════════
 
-  return `The test file needs fixing. It should compile and run, but FAIL on assertions (not on import/syntax errors).
+export function promptFixTest(ctx: StateContext): string {
+  const { task, lastGuardResults } = ctx;
+  const failedChecks = lastGuardResults
+    .filter(r => !r.ok)
+    .map(r => `[${r.name}] ${r.detail}`)
+    .join('\n');
+
+  return `The test file failed verification. Fix it.
+
+TASK: ${task.title}
+TEST FILE: ${task.testFile}
+SOURCE FILE: ${task.sourceFile}
+
+FAILED CHECKS:
+${failedChecks}
+
+${formatExistingCode(ctx)}
+
+Fix the test file so that:
+1. It compiles without errors
+2. Imports resolve (create stub source file with minimal exports if needed)
+3. It runs and finds test cases
+4. Tests fail on ASSERTION (not compile/import error)
+5. Tests are SATISFIABLE — a correct implementation can make them pass
+
+Output fixed file(s) as code blocks tagged with filenames.`;
+}
+
+// ═══════════════════════════════════════════════════════════════
+// FIX INSANE TEST (failed test-sanity guard)
+// ═══════════════════════════════════════════════════════════════
+
+export function promptFixInsaneTest(ctx: StateContext, sanityDetail: string): string {
+  const { task } = ctx;
+
+  return `CRITICAL: The test file contains LOGICALLY IMPOSSIBLE assertions that can never pass.
 
 TASK: ${task.title}
 TEST FILE: ${task.testFile}
 
-CURRENT TEST ERROR:
-${lastTestResult?.errorSummary || lastTestResult?.output || 'Unknown error'}
+DETECTED ISSUES:
+${sanityDetail}
 
-${existingFiles}
+${formatExistingCode(ctx)}
 
-Fix the test so it:
-1. Compiles without errors
-2. Imports resolve correctly (create stub source file if needed)
-3. Runs but FAILS on assertion (this is expected - RED phase)
+These patterns are WRONG:
+- expect(x).not.toBe(x) → always fails, no implementation can fix it
+- expect(true).toBe(false) → boolean contradiction
+- expect("str").not.toContain("str") → string contains itself
 
-Output the fixed file(s) as code blocks tagged with filenames.`;
+REWRITE the test to assert BEHAVIOR instead:
+- Test that a function returns expected output for given input
+- Test that a component renders expected content
+- Test that data structures have expected properties
+- Use .toBe(), .toEqual(), .toContain() POSITIVELY
+
+The test should still FAIL because the implementation is missing, but it must be
+POSSIBLE to make it pass with a correct implementation.
+
+Output the complete rewritten test file as a code block tagged with the filename.`;
 }
 
-/** Prompt: implement code to make tests pass (GREEN phase) */
+// ═══════════════════════════════════════════════════════════════
+// IMPLEMENT (GREEN phase)
+// ═══════════════════════════════════════════════════════════════
+
 export function promptImplement(ctx: StateContext): string {
   const { task, lastTestResult } = ctx;
-  const existingFiles = formatExistingCode(ctx);
 
   return `TASK: ${task.title}
 ${task.description}
@@ -78,74 +139,89 @@ TEST FILE: ${task.testFile}
 FAILING TESTS:
 ${lastTestResult?.errorSummary || 'Tests are failing'}
 
-FULL TEST OUTPUT:
+FULL TEST OUTPUT (truncated):
 ${lastTestResult?.output?.slice(0, 1500) || 'No output'}
 
-${existingFiles}
+${formatExistingCode(ctx)}
 
-Write the MINIMAL implementation in ${task.sourceFile} to make all tests pass.
+Write the MINIMAL implementation in \`${task.sourceFile}\` to make all tests pass.
 - Do NOT change the test file
-- Import/export correctly
-- Handle edge cases mentioned in tests
-- Use React/TypeScript best practices
+- Export everything the test imports
+- Handle edge cases the tests check
+- Use TypeScript strict types
 
-Output the implementation file as a code block tagged with the filename.
+Output the implementation as a code block tagged with the filename.
 If other files need changes, include those too.`;
 }
 
-/** Prompt: fix failing implementation */
-export function promptFixImplementation(ctx: StateContext): string {
-  const { task, lastTestResult } = ctx;
-  const existingFiles = formatExistingCode(ctx);
+// ═══════════════════════════════════════════════════════════════
+// FIX IMPLEMENTATION (failed VERIFY_GREEN)
+// ═══════════════════════════════════════════════════════════════
 
-  return `The implementation isn't passing tests yet.
+export function promptFixImplementation(ctx: StateContext): string {
+  const { task, lastTestResult, lastGuardResults } = ctx;
+  const failedChecks = lastGuardResults
+    .filter(r => !r.ok)
+    .map(r => `[${r.name}] ${r.detail}`)
+    .join('\n');
+
+  return `Implementation isn't passing tests. Fix it.
 
 TASK: ${task.title}
 SOURCE FILE: ${task.sourceFile}
 
+FAILED CHECKS:
+${failedChecks}
+
 TEST FAILURES:
-${lastTestResult?.errorSummary || 'Unknown failures'}
+${lastTestResult?.errorSummary || 'Unknown'}
 
 FULL OUTPUT:
 ${lastTestResult?.output?.slice(0, 1500) || 'No output'}
 
-${existingFiles}
+${formatExistingCode(ctx)}
 
-Fix ${task.sourceFile} to make all tests pass.
+Fix \`${task.sourceFile}\` to make all tests pass.
 - Do NOT modify the test file
-- Focus on the specific errors shown above
+- Focus on the specific errors above
 - Keep changes minimal
 
-Output only the files that need changes, as code blocks tagged with filenames.`;
+Output only changed files as code blocks tagged with filenames.`;
 }
 
-/** Prompt: refactor after green (REFACTOR phase) */
+// ═══════════════════════════════════════════════════════════════
+// REFACTOR
+// ═══════════════════════════════════════════════════════════════
+
 export function promptRefactor(ctx: StateContext): string {
   const { task } = ctx;
-  const existingFiles = formatExistingCode(ctx);
 
-  return `Tests are passing. Now refactor for quality.
+  return `Tests are passing. Refactor for quality.
 
 TASK: ${task.title}
 SOURCE FILE: ${task.sourceFile}
 TEST FILE: ${task.testFile}
 
-${existingFiles}
+${formatExistingCode(ctx)}
 
-Refactor the implementation (and tests if needed):
+Refactor:
 - Extract constants, improve naming
 - Remove duplication
-- Improve types
-- Keep tests passing
+- Improve types (stricter, more descriptive)
+- Keep ALL tests passing
 
-If no meaningful refactoring is needed, respond with exactly: NO_REFACTOR_NEEDED
+If no meaningful refactoring needed, respond: NO_REFACTOR_NEEDED
 
-Otherwise output the refactored files as code blocks tagged with filenames.`;
+Otherwise output refactored files as code blocks tagged with filenames.`;
 }
+
+// ═══════════════════════════════════════════════════════════════
+// HELPERS
+// ═══════════════════════════════════════════════════════════════
 
 function formatExistingCode(ctx: StateContext): string {
   const entries = Object.entries(ctx.existingCode);
-  if (entries.length === 0) return '';
+  if (entries.length === 0) return 'No existing code files yet.';
 
   return 'EXISTING CODE:\n' + entries
     .map(([file, content]) => `\`\`\`${file}\n${content}\n\`\`\``)

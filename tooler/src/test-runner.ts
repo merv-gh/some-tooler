@@ -1,5 +1,5 @@
 import { execSync } from 'child_process';
-import type { TestResult, ToolerConfig } from './types.js';
+import type { TestResult, TestFailure, ToolerConfig } from './types.js';
 
 export class TestRunner {
   private appDir: string;
@@ -12,7 +12,7 @@ export class TestRunner {
     this.e2eCmd = config.testCommand;
   }
 
-  /** Run vitest unit tests, return structured result */
+  /** Run vitest on specific test file */
   runUnit(testFile?: string): TestResult {
     const cmd = testFile
       ? `${this.unitCmd} --run ${testFile}`
@@ -20,30 +20,48 @@ export class TestRunner {
     return this.exec(cmd);
   }
 
-  /** Run all tests */
+  /** Run full test suite */
   runAll(): TestResult {
     return this.exec(`${this.unitCmd} --run`);
   }
 
-  /** Run playwright e2e tests */
+  /** Run playwright e2e */
   runE2e(testFile?: string): TestResult {
-    const cmd = testFile
-      ? `${this.e2eCmd} ${testFile}`
-      : this.e2eCmd;
+    const cmd = testFile ? `${this.e2eCmd} ${testFile}` : this.e2eCmd;
     return this.exec(cmd);
   }
 
-  /** Check if a specific test file compiles (TypeScript check) */
+  /**
+   * Fast compile check using esbuild (falls back to tsc).
+   * esbuild is 10-100x faster than tsc for single-file checks.
+   */
   checkCompiles(file: string): { ok: boolean; error: string } {
+    // Try esbuild first (fast path)
     try {
-      execSync(`npx tsc --noEmit ${file}`, {
+      execSync(
+        `npx esbuild ${file} --bundle --platform=browser --jsx=automatic --outfile=/dev/null --external:react --external:react-dom --external:vitest --external:@testing-library/*`,
+        { cwd: this.appDir, encoding: 'utf-8', timeout: 15_000, stdio: ['pipe', 'pipe', 'pipe'] }
+      );
+      return { ok: true, error: '' };
+    } catch (esbuildErr: any) {
+      const esbuildOutput = (esbuildErr.stderr || '') + (esbuildErr.stdout || '');
+      // If esbuild found real errors, return them
+      if (esbuildOutput.includes('error')) {
+        return { ok: false, error: this.truncate(esbuildOutput, 500) };
+      }
+    }
+
+    // Fallback: tsc (slower but more accurate)
+    try {
+      execSync(`npx tsc --noEmit --skipLibCheck ${file}`, {
         cwd: this.appDir,
         encoding: 'utf-8',
         timeout: 30_000,
+        stdio: ['pipe', 'pipe', 'pipe'],
       });
       return { ok: true, error: '' };
     } catch (e: any) {
-      return { ok: false, error: e.stdout || e.message };
+      return { ok: false, error: this.truncate((e.stdout || '') + (e.stderr || ''), 500) };
     }
   }
 
@@ -54,8 +72,9 @@ export class TestRunner {
       output = execSync(cmd, {
         cwd: this.appDir,
         encoding: 'utf-8',
-        timeout: 60_000,
+        timeout: 90_000,
         env: { ...process.env, FORCE_COLOR: '0', CI: '1' },
+        stdio: ['pipe', 'pipe', 'pipe'],
       });
       passed = true;
     } catch (e: any) {
@@ -63,9 +82,10 @@ export class TestRunner {
       passed = false;
     }
 
+    const parsed = this.parseOutput(output);
     return {
       passed,
-      ...this.parseOutput(output),
+      ...parsed,
       output: this.truncate(output, 2000),
     };
   }
@@ -73,36 +93,55 @@ export class TestRunner {
   private parseOutput(output: string): {
     totalTests: number;
     failedTests: number;
-    newTestsAdded: boolean;
+    passedTests: number;
     errorSummary: string;
+    failures: TestFailure[];
   } {
-    // Vitest output parsing
+    // Vitest output patterns
     const totalMatch = output.match(/Tests\s+(\d+)\s/);
     const failedMatch = output.match(/(\d+)\s+failed/);
     const passedMatch = output.match(/(\d+)\s+passed/);
 
     const total = totalMatch ? parseInt(totalMatch[1]) : 0;
     const failed = failedMatch ? parseInt(failedMatch[1]) : 0;
+    const passedCount = passedMatch ? parseInt(passedMatch[1]) : 0;
 
-    // Extract error lines for feedback
+    // Parse individual failures
+    const failures: TestFailure[] = [];
+    const failRegex = /FAIL\s+(.+?)[\n\r][\s\S]*?Expected[:\s]+(.+?)[\n\r][\s\S]*?Received[:\s]+(.+?)[\n\r]/g;
+    let fm;
+    while ((fm = failRegex.exec(output)) !== null) {
+      failures.push({
+        testName: fm[1]?.trim() || '',
+        expected: fm[2]?.trim() || '',
+        received: fm[3]?.trim() || '',
+        line: fm[0]?.trim() || '',
+      });
+    }
+
+    // Error summary — key lines for model feedback
     const errorLines = output
       .split('\n')
       .filter(l =>
         l.includes('Error') ||
         l.includes('FAIL') ||
-        l.includes('AssertionError') ||
         l.includes('expect(') ||
+        l.includes('Expected') ||
+        l.includes('Received') ||
         l.includes('TypeError') ||
         l.includes('Cannot find') ||
-        l.includes('not defined')
+        l.includes('not defined') ||
+        l.includes('not a function') ||
+        l.includes('Module not found')
       )
-      .slice(0, 10);
+      .slice(0, 15);
 
     return {
-      totalTests: total,
+      totalTests: total || (failed + passedCount),
       failedTests: failed,
-      newTestsAdded: total > 0,
+      passedTests: passedCount,
       errorSummary: errorLines.join('\n'),
+      failures,
     };
   }
 
