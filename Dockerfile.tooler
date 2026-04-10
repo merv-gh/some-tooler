@@ -1,0 +1,17 @@
+FROM node:20-slim
+
+RUN apt-get update && apt-get install -y git && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /workspace/tooler
+
+# Install tooler deps
+COPY tooler/package.json tooler/tsconfig.json ./
+RUN npm install
+
+# Copy tooler source
+COPY tooler/src ./src
+
+# App dir will be mounted as volume
+WORKDIR /workspace/tooler
+
+CMD ["npx", "tsx", "src/index.ts"]

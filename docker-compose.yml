@@ -1,0 +1,52 @@
+version: "3.9"
+
+services:
+  # ── Tooler: TDD orchestrator ──────────────────────────────
+  tooler:
+    build:
+      context: .
+      dockerfile: Dockerfile.tooler
+    volumes:
+      - ./app:/workspace/app
+      - ./plan:/workspace/plan
+      - ./logs:/workspace/logs
+      - ./tooler/src:/workspace/tooler/src  # live reload
+    environment:
+      - OLLAMA_URL=http://host.docker.internal:11434
+      - OLLAMA_MODEL=${OLLAMA_MODEL:-qwen3-coder}
+      - APP_DIR=/workspace/app
+      - PLAN_FILE=/workspace/plan/plan.md
+      - MAX_STATE_ATTEMPTS=3
+      - MAX_TASK_ATTEMPTS=12
+    depends_on:
+      app-setup:
+        condition: service_completed_successfully
+    networks:
+      - tooler-net
+
+  # ── One-shot: initialize the app if not exists ────────────
+  app-setup:
+    image: node:20-slim
+    working_dir: /workspace/app
+    volumes:
+      - ./app:/workspace/app
+      - ./scripts:/workspace/scripts
+    entrypoint: ["bash", "/workspace/scripts/init-app.sh"]
+    networks:
+      - tooler-net
+
+  # ── Playwright for e2e tests (optional, later) ────────────
+  playwright:
+    image: mcr.microsoft.com/playwright:v1.48.0-noble
+    working_dir: /workspace/app
+    volumes:
+      - ./app:/workspace/app
+    command: ["npx", "playwright", "test"]
+    profiles:
+      - e2e
+    networks:
+      - tooler-net
+
+networks:
+  tooler-net:
+    driver: bridge

@@ -1,0 +1,13 @@
+{
+  "name": "tdd-tooler",
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "start": "tsx src/index.ts",
+    "start:dry": "DRY_RUN=1 tsx src/index.ts"
+  },
+  "dependencies": {
+    "tsx": "^4.19.0",
+    "typescript": "^5.6.0"
+  }
+}
