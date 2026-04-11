@@ -8,7 +8,7 @@ import { OllamaClient } from './ollama.js';
 // ── Config ───────────────────────────────────────────────────
 const config: ToolerConfig = {
   ollamaUrl: process.env.OLLAMA_URL || 'http://localhost:11434',
-  model: process.env.OLLAMA_MODEL || 'qwen3.5-coder',
+  model: process.env.OLLAMA_MODEL || 'qwen3.5',
   appDir: process.env.APP_DIR || join(process.cwd(), '..', 'app'),
   planFile: process.env.PLAN_FILE || join(process.cwd(), '..', 'plan', 'plan.md'),
   maxAttemptsPerPhase: parseInt(process.env.MAX_PHASE_ATTEMPTS || '3'),

@@ -7,7 +7,7 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 ROOT_DIR="$(dirname "$SCRIPT_DIR")"
 
 export OLLAMA_URL="${OLLAMA_URL:-http://localhost:11434}"
-export OLLAMA_MODEL="${OLLAMA_MODEL:-qwen3.5-coder}"
+export OLLAMA_MODEL="${OLLAMA_MODEL:-qwen3.5}"
 export APP_DIR="${APP_DIR:-$ROOT_DIR/app}"
 export PLAN_FILE="${PLAN_FILE:-$ROOT_DIR/plan/plan.md}"
 export MAX_PHASE_ATTEMPTS="${MAX_PHASE_ATTEMPTS:-3}"

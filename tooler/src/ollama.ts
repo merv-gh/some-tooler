@@ -25,10 +25,10 @@ export class OllamaClient {
           { role: 'system', content: systemPrompt },
           { role: 'user', content: prompt },
         ],
-        stream: false,
+        stream: true,
         options: {
           temperature: 0.3,
-          num_predict: 16384,
+          num_predict: -1,    // unlimited — model decides when to stop
           top_p: 0.9,
         },
       }),
@@ -39,62 +39,114 @@ export class OllamaClient {
       throw new Error(`Ollama error ${response.status}: ${text}`);
     }
 
-    const data = await response.json() as any;
-    const elapsed = Date.now() - startTime;
-    const rawContent = data.message?.content ?? '';
-    const tokensUsed = data.eval_count ?? 0;
-    const promptTokens = data.prompt_eval_count ?? 0;
-    const finishReason = data.done_reason ?? 'unknown';
+    if (!response.body) {
+      throw new Error('Ollama returned no stream body');
+    }
 
-    // ── Detect and strip <think> blocks ────────────────────
+    // ── Stream processing ──────────────────────────────────
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let rawContent = '';
+    let tokensUsed = 0;
+    let promptTokens = 0;
+    let finishReason = 'unknown';
+    let inThinkBlock = false;
+    let buffer = '';
+
+    process.stdout.write(`  [ollama] ${this.model} streaming: `);
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+
+      buffer += decoder.decode(value, { stream: true });
+
+      // Ollama streams newline-delimited JSON
+      const lines = buffer.split('\n');
+      buffer = lines.pop() ?? '';  // keep incomplete last line
+
+      for (const line of lines) {
+        if (!line.trim()) continue;
+        let chunk: any;
+        try {
+          chunk = JSON.parse(line);
+        } catch {
+          continue;
+        }
+
+        const token = chunk.message?.content ?? '';
+        rawContent += token;
+
+        // ── Live console output ────────────────────────────
+        // Track <think> blocks for display
+        const combined = rawContent;
+        if (token) {
+          if (combined.includes('<think>') && !combined.includes('</think>')) {
+            // Inside thinking — show dots
+            if (!inThinkBlock) {
+              process.stdout.write('🧠');
+              inThinkBlock = true;
+            }
+            // Show a dot every ~200 chars of thinking
+            if (rawContent.length % 200 < token.length) {
+              process.stdout.write('.');
+            }
+          } else {
+            if (inThinkBlock) {
+              process.stdout.write(' → ');
+              inThinkBlock = false;
+            }
+            // Show code-relevant tokens live
+            if (token.includes('```')) {
+              process.stdout.write('📄');
+            } else if (token.includes('\n')) {
+              process.stdout.write('·');
+            }
+          }
+        }
+
+        // Final chunk has metadata
+        if (chunk.done) {
+          tokensUsed = chunk.eval_count ?? 0;
+          promptTokens = chunk.prompt_eval_count ?? 0;
+          finishReason = chunk.done_reason ?? 'stop';
+        }
+      }
+    }
+
+    const elapsed = Date.now() - startTime;
+
+    // ── Strip thinking ─────────────────────────────────────
     const { thinking, output: strippedContent } = extractThinking(rawContent);
     const thinkingTokensEstimate = thinking ? Math.ceil(thinking.length / 4) : 0;
-
-    // ── Logging header ─────────────────────────────────────
     const contentLen = strippedContent.trim().length;
     const codeBlocks = (strippedContent.match(/```/g) || []).length / 2;
 
-    console.log(`  [ollama] ${this.model} | ${(elapsed / 1000).toFixed(1)}s | prompt:${promptTokens} eval:${tokensUsed} | reason:${finishReason} | output:${contentLen}ch ${Math.floor(codeBlocks)}blk`);
+    // ── Summary line ───────────────────────────────────────
+    process.stdout.write('\n');
+    console.log(`  [ollama] done ${(elapsed / 1000).toFixed(1)}s | prompt:${promptTokens} eval:${tokensUsed} | reason:${finishReason} | output:${contentLen}ch ${Math.floor(codeBlocks)}blk`);
 
     // ── Thinking diagnostics ───────────────────────────────
     if (thinking) {
-      console.log(`  [ollama] 🧠 THINKING detected: ~${thinkingTokensEstimate} tokens (~${Math.ceil(thinking.length / 1000)}k chars)`);
-      console.log(`  [ollama]    first 200 chars: "${thinking.slice(0, 200).replace(/\n/g, '↵')}"`);
-
-      const ratio = tokensUsed > 0 ? (thinkingTokensEstimate / tokensUsed * 100).toFixed(0) : '?';
-      console.log(`  [ollama]    thinking/total ratio: ~${ratio}%`);
-
+      console.log(`  [ollama] 🧠 thinking: ~${thinkingTokensEstimate}tok (~${Math.ceil(thinking.length / 1000)}k chars) | first 150: "${thinking.slice(0, 150).replace(/\n/g, '↵')}"`);
       if (contentLen < 50) {
-        console.warn(`  ⚠ [ollama] MODEL SPENT ALL TOKENS THINKING — no useful output!`);
-        console.warn(`    thinking: ~${thinkingTokensEstimate} tokens`);
-        console.warn(`    actual output: ${contentLen} chars`);
-        console.warn(`    This is the #1 cause of empty output with qwen3/3.5 models.`);
-        console.warn(`    Consider: /no_think prefix, or switching to a non-thinking model variant.`);
+        console.warn(`  ⚠ ALL TOKENS SPENT THINKING — no useful output`);
       }
     }
 
-    // ── Empty/short output diagnostics ─────────────────────
+    // ── Empty output diagnostics ───────────────────────────
     if (contentLen < 10) {
-      console.warn(`  ⚠ [ollama] EMPTY/SHORT OUTPUT`);
-      console.warn(`    done_reason: ${finishReason}`);
+      console.warn(`  ⚠ EMPTY/SHORT OUTPUT`);
+      console.warn(`    reason:${finishReason} eval:${tokensUsed} raw:${rawContent.length}ch stripped:${contentLen}ch think:${thinking ? 'YES' : 'no'}`);
       if (finishReason === 'length') {
-        console.warn(`    ⚠ HIT TOKEN LIMIT — output truncated. num_predict may need increase.`);
+        console.warn(`    ⚠ HIT TOKEN LIMIT`);
       }
-      console.warn(`    total_duration: ${data.total_duration ? (data.total_duration / 1e9).toFixed(1) + 's' : 'n/a'}`);
-      console.warn(`    eval_count: ${tokensUsed} (tokens generated)`);
-      console.warn(`    prompt_eval_count: ${promptTokens} (tokens in prompt)`);
-      console.warn(`    raw content length: ${rawContent.length} chars`);
-      console.warn(`    stripped content length: ${contentLen} chars`);
-      console.warn(`    had <think> block: ${thinking ? 'YES' : 'no'}`);
       const promptLen = prompt.length + systemPrompt.length;
-      console.warn(`    prompt+system chars: ${promptLen}`);
-      if (promptLen > 30000) {
-        console.warn(`    ⚠ Prompt may exceed model context window!`);
-      }
+      console.warn(`    prompt+system: ${promptLen}ch`);
     }
 
-    // ── Dump raw response to log file for debugging ────────
-    this.logRaw(data, rawContent, strippedContent, thinking, prompt, elapsed);
+    // ── Debug log ──────────────────────────────────────────
+    this.logRaw(rawContent, strippedContent, thinking, prompt, elapsed, tokensUsed, promptTokens, finishReason);
 
     return { content: strippedContent, tokensUsed };
   }
@@ -125,14 +177,15 @@ export class OllamaClient {
     return blocks;
   }
 
-  /** Append raw ollama response to debug log */
   private logRaw(
-    data: any,
     rawContent: string,
     strippedContent: string,
     thinking: string | null,
     prompt: string,
-    elapsed: number
+    elapsed: number,
+    evalCount: number,
+    promptEvalCount: number,
+    doneReason: string,
   ) {
     try {
       if (!existsSync(this.logDir)) mkdirSync(this.logDir, { recursive: true });
@@ -140,9 +193,9 @@ export class OllamaClient {
         ts: new Date().toISOString(),
         model: this.model,
         elapsed_ms: elapsed,
-        eval_count: data.eval_count,
-        prompt_eval_count: data.prompt_eval_count,
-        done_reason: data.done_reason,
+        eval_count: evalCount,
+        prompt_eval_count: promptEvalCount,
+        done_reason: doneReason,
         raw_content_length: rawContent.length,
         stripped_content_length: strippedContent.trim().length,
         thinking_length: thinking?.length ?? 0,
@@ -164,13 +217,7 @@ export class OllamaClient {
 // Think-block extraction
 // ═══════════════════════════════════════════════════════════════
 
-/**
- * Qwen3/3.5 models wrap reasoning in <think>...</think>.
- * This eats tokens from num_predict budget.
- * Strip it, return separately for diagnostics.
- */
 function extractThinking(content: string): { thinking: string | null; output: string } {
-  // Pattern: <think>...</think> (can appear multiple times, can be at start)
   const thinkRegex = /<think>([\s\S]*?)<\/think>/g;
   let thinking = '';
   let match;
@@ -178,15 +225,15 @@ function extractThinking(content: string): { thinking: string | null; output: st
     thinking += match[1];
   }
 
-  // Also handle unclosed <think> (model hit token limit mid-thinking)
+  // Unclosed <think> (hit token limit mid-thought)
   const unclosedMatch = content.match(/<think>([\s\S]*)$/);
   if (unclosedMatch && !content.includes('</think>')) {
     thinking += unclosedMatch[1];
   }
 
   const output = content
-    .replace(/<think>[\s\S]*?<\/think>/g, '')  // closed blocks
-    .replace(/<think>[\s\S]*$/g, '')            // unclosed trailing block
+    .replace(/<think>[\s\S]*?<\/think>/g, '')
+    .replace(/<think>[\s\S]*$/g, '')
     .trim();
 
   return {
