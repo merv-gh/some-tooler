@@ -13,7 +13,6 @@ fi
 
 echo "=== Initializing app with vite react-ts ==="
 
-# Create vite project directly in app dir (no tmp dir needed)
 cd "$APP_DIR"
 npx --yes create-vite@latest . --template react-ts
 

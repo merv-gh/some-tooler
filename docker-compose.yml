@@ -6,7 +6,6 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.tooler
-    user: "${UID:-1000}:${GID:-1000}"
     volumes:
       - ./app:/workspace/app
       - ./plan:/workspace/plan
@@ -14,7 +13,7 @@ services:
       - ./tooler/src:/workspace/tooler/src
     environment:
       - OLLAMA_URL=http://host.docker.internal:11434
-      - OLLAMA_MODEL=${OLLAMA_MODEL:-qwen3.5}
+      - OLLAMA_MODEL=${OLLAMA_MODEL:-qwen3.5-coder}
       - APP_DIR=/workspace/app
       - PLAN_FILE=/workspace/plan/plan.md
       - MAX_PHASE_ATTEMPTS=${MAX_PHASE_ATTEMPTS:-3}
@@ -29,14 +28,16 @@ services:
     restart: unless-stopped
 
   # ── One-shot: bootstrap app if empty ─────────────────────
+  # Runs as root so it can write to bind-mounted dirs,
+  # then chowns everything to 1000:1000 at the end.
   app-setup:
     image: node:20-slim
-    user: "${UID:-1000}:${GID:-1000}"
     working_dir: /workspace/app
     volumes:
       - ./app:/workspace/app
+      - ./logs:/workspace/logs
       - ./scripts:/workspace/scripts
-    entrypoint: ["bash", "/workspace/scripts/init-app.sh"]
+    entrypoint: ["bash", "-c", "bash /workspace/scripts/init-app.sh && chown -R 1000:1000 /workspace/app /workspace/logs"]
     extra_hosts:
       - "host.docker.internal:host-gateway"
     networks:
