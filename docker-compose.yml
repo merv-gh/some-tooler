@@ -18,6 +18,8 @@ services:
       - PLAN_FILE=/workspace/plan/plan.md
       - MAX_PHASE_ATTEMPTS=${MAX_PHASE_ATTEMPTS:-3}
       - MAX_TASK_ATTEMPTS=${MAX_TASK_ATTEMPTS:-15}
+    ports:
+      - "${UI_PORT:-7700}:7700"
     extra_hosts:
       - "host.docker.internal:host-gateway"
     depends_on:

@@ -4,6 +4,8 @@ import type { ToolerConfig } from './types.js';
 import { parsePlan } from './plan-parser.js';
 import { runTaskWithMachine } from './machine.js';
 import { OllamaClient } from './ollama.js';
+import { trace } from './trace.js';
+import { startUiServer } from './ui-server.js';
 
 // ── Config ───────────────────────────────────────────────────
 const config: ToolerConfig = {
@@ -56,6 +58,10 @@ async function main() {
   console.log(`║  App:    ${config.appDir.slice(-38).padEnd(39)}║`);
   console.log('╚══════════════════════════════════════════════════╝');
   console.log('');
+
+  // Configure trace + start UI
+  trace.configure(config.logDir);
+  startUiServer();
 
   // Connectivity check
   const client = new OllamaClient(config);
