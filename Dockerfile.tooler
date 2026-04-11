@@ -2,19 +2,24 @@ FROM node:20-slim
 
 RUN apt-get update && apt-get install -y git && rm -rf /var/lib/apt/lists/*
 
-# Create workspace owned by node user (uid 1000)
+# Create workspace
 RUN mkdir -p /workspace/app /workspace/plan /workspace/logs /workspace/tooler \
     && chown -R 1000:1000 /workspace
 
 WORKDIR /workspace/tooler
 
-# Install tooler deps as node user
-COPY --chown=1000:1000 tooler/package.json tooler/package-lock.json* tooler/tsconfig.json ./
+# Copy package files — use separate COPY per file to avoid glob issues
+COPY tooler/package.json ./package.json
+COPY tooler/tsconfig.json ./tsconfig.json
+
+# Copy lockfile if exists (separate layer, optional)
+COPY tooler/package-lock.jso[n] ./
+
+# Install ALL deps (including devDependencies for @types)
 RUN npm install
 
 # Copy tooler source
-COPY --chown=1000:1000 tooler/src ./src
+COPY tooler/src ./src
 
-WORKDIR /workspace/tooler
-
-CMD ["npx", "tsx", "src/index.ts"]
+# Entrypoint: verify deps then run
+CMD ["sh", "-c", "npm install --prefer-offline --no-audit 2>/dev/null; exec npx tsx src/index.ts"]
