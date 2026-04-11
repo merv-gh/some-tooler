@@ -218,6 +218,68 @@ Otherwise output refactored files as code blocks tagged with filenames.`;
 }
 
 // ═══════════════════════════════════════════════════════════════
+// DIAGNOSIS-AWARE PROMPTS
+// ═══════════════════════════════════════════════════════════════
+
+import type { Diagnosis } from './diagnosis.js';
+
+/** Fix test based on diagnosis (wrong API, bad assertion, etc) */
+export function promptFixTestFromDiagnosis(ctx: StateContext, diagnosis: Diagnosis): string {
+  const { task } = ctx;
+
+  return `The test file has errors. Diagnosis: ${diagnosis.reason}
+
+TASK: ${task.title}
+TEST FILE: ${task.testFile}
+SOURCE FILE: ${task.sourceFile}
+
+ERROR SOURCE: TEST (the test code itself is wrong)
+DIAGNOSIS: ${diagnosis.reason}
+DETAILS:
+${diagnosis.details.map(d => '- ' + d).join('\n')}
+
+${formatExistingCode(ctx)}
+
+Fix the test file:
+- Use only vitest built-in matchers: toBe, toEqual, toContain, toHaveLength, toBeTruthy, toBeFalsy, toBeDefined, toBeUndefined, toBeNull, toThrow, toMatch, toHaveProperty, toBeGreaterThan, toBeLessThan
+- Do NOT use jest-extended matchers (toBeNumber, toBeString, toBeArray, etc)
+- Do NOT use chai-style assertions (assert., should., expect().to.be)
+- Replace invalid matchers with vitest equivalents:
+  * toBeNumber() → expect(typeof x).toBe('number')
+  * toBeString() → expect(typeof x).toBe('string')
+  * toBeArray() → expect(Array.isArray(x)).toBe(true)
+  * toInclude() → toContain()
+- Tests must still fail because implementation is incomplete (RED phase)
+
+Output the fixed test file as a code block tagged with the filename.`;
+}
+
+/** Fix environment/config issue */
+export function promptFixEnv(ctx: StateContext, diagnosis: Diagnosis): string {
+  const { task } = ctx;
+
+  return `There's an environment/configuration error preventing tests from running.
+
+TASK: ${task.title}
+TEST FILE: ${task.testFile}
+SOURCE FILE: ${task.sourceFile}
+
+ERROR: ${diagnosis.reason}
+DETAILS:
+${diagnosis.details.map(d => '- ' + d).join('\n')}
+
+${formatExistingCode(ctx)}
+
+Fix the environment issue:
+- If a module is missing, add the import or create a stub file
+- If a path is wrong, fix the import path
+- If a config issue, fix the relevant config
+- Do NOT change test logic or implementation logic
+
+Output only the files that need changes as code blocks tagged with filenames.`;
+}
+
+// ═══════════════════════════════════════════════════════════════
 // HELPERS
 // ═══════════════════════════════════════════════════════════════
 

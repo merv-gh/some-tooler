@@ -118,34 +118,50 @@ export function startUiServer(): void {
 
 const MACHINE_DEFINITION = {
   nodes: [
-    { id: 'writeTest',      label: 'Write Test',      type: 'action',  x: 0,   y: 150 },
-    { id: 'verifyRed',      label: 'Verify RED',      type: 'verify',  x: 250, y: 150,
+    { id: 'writeTest',         label: 'Write Test',       type: 'action',    x: 0,    y: 150 },
+    { id: 'verifyRed',         label: 'Verify RED',       type: 'verify',    x: 250,  y: 150,
       guards: ['test-file-exists', 'test-compiles', 'test-runs', 'tests-fail', 'fails-on-assertion', 'test-sanity'] },
-    { id: 'implement',      label: 'Implement',       type: 'action',  x: 500, y: 150 },
-    { id: 'verifyGreen',    label: 'Verify GREEN',    type: 'verify',  x: 750, y: 150,
+    { id: 'fixTestDiagnosed',  label: 'Fix Test',         type: 'diagnose',  x: 250,  y: 30 },
+    { id: 'fixEnv',            label: 'Fix Env',          type: 'diagnose',  x: 500,  y: 30 },
+    { id: 'implement',         label: 'Implement',        type: 'action',    x: 500,  y: 150 },
+    { id: 'verifyGreen',       label: 'Verify GREEN',     type: 'verify',    x: 750,  y: 150,
       guards: ['source-file-exists', 'source-compiles', 'test-runs', 'tests-pass'] },
-    { id: 'refactor',       label: 'Refactor',        type: 'action',  x: 1000, y: 150 },
-    { id: 'verifyRefactor', label: 'Verify Refactor', type: 'verify',  x: 1250, y: 150,
+    { id: 'diagnose',          label: 'Diagnose',         type: 'diagnose',  x: 750,  y: 280,
+      guards: ['diag:structural', 'diag:pattern', 'diag:heuristic', 'diag:model'] },
+    { id: 'refactor',          label: 'Refactor',         type: 'action',    x: 1000, y: 150 },
+    { id: 'verifyRefactor',    label: 'Verify Refactor',  type: 'verify',    x: 1250, y: 150,
       guards: ['source-compiles', 'test-compiles', 'all-tests-pass'] },
-    { id: 'done',           label: 'DONE',            type: 'terminal', x: 1500, y: 100 },
-    { id: 'skipped',        label: 'SKIPPED',         type: 'terminal', x: 1500, y: 200 },
+    { id: 'done',              label: 'DONE',             type: 'terminal',  x: 1500, y: 100 },
+    { id: 'skipped',           label: 'SKIPPED',          type: 'terminal',  x: 1500, y: 200 },
   ],
   edges: [
-    { id: 'e1', source: 'writeTest',      target: 'verifyRed',      label: 'code written' },
-    { id: 'e2', source: 'verifyRed',      target: 'implement',      label: 'RED ✓',           type: 'success' },
-    { id: 'e3', source: 'verifyRed',      target: 'writeTest',      label: 'fix test',        type: 'retry' },
-    { id: 'e4', source: 'verifyRed',      target: 'refactor',       label: 'already green',   type: 'skip' },
-    { id: 'e5', source: 'implement',      target: 'verifyGreen',    label: 'code written' },
-    { id: 'e6', source: 'verifyGreen',    target: 'refactor',       label: 'GREEN ✓',         type: 'success' },
-    { id: 'e7', source: 'verifyGreen',    target: 'implement',      label: 'fix impl',        type: 'retry' },
-    { id: 'e8', source: 'refactor',       target: 'verifyRefactor', label: 'code changed' },
-    { id: 'e9', source: 'refactor',       target: 'done',           label: 'no changes' },
-    { id: 'e10', source: 'verifyRefactor', target: 'done',          label: 'pass' },
-    { id: 'e11', source: 'verifyRefactor', target: 'done',          label: 'fail (accept)',   type: 'retry' },
-    { id: 'e12', source: 'verifyRed',     target: 'skipped',        label: 'max retries',     type: 'fail' },
-    { id: 'e13', source: 'verifyGreen',   target: 'skipped',        label: 'max retries',     type: 'fail' },
-    { id: 'e14', source: 'writeTest',     target: 'skipped',        label: 'max retries',     type: 'fail' },
-    { id: 'e15', source: 'implement',     target: 'skipped',        label: 'max retries',     type: 'fail' },
+    // Main flow
+    { id: 'e1',  source: 'writeTest',        target: 'verifyRed',        label: 'code written' },
+    { id: 'e2',  source: 'verifyRed',        target: 'implement',        label: 'RED ✓',          type: 'success' },
+    { id: 'e5',  source: 'implement',        target: 'verifyGreen',      label: 'code written' },
+    { id: 'e6',  source: 'verifyGreen',      target: 'refactor',         label: 'GREEN ✓',        type: 'success' },
+    { id: 'e8',  source: 'refactor',         target: 'verifyRefactor',   label: 'code changed' },
+    { id: 'e9',  source: 'refactor',         target: 'done',             label: 'no changes' },
+    { id: 'e10', source: 'verifyRefactor',   target: 'done',             label: 'pass' },
+    // Retry loops
+    { id: 'e3',  source: 'verifyRed',        target: 'writeTest',        label: 'retry test',     type: 'retry' },
+    { id: 'e7',  source: 'verifyGreen',      target: 'implement',        label: 'retry impl',     type: 'retry' },
+    { id: 'e11', source: 'verifyRefactor',   target: 'done',             label: 'fail (accept)',  type: 'retry' },
+    // Diagnosis routing
+    { id: 'e20', source: 'verifyRed',        target: 'fixTestDiagnosed', label: 'test wrong',     type: 'diagnose' },
+    { id: 'e21', source: 'verifyRed',        target: 'fixEnv',           label: 'env wrong',      type: 'diagnose' },
+    { id: 'e22', source: 'verifyGreen',      target: 'fixTestDiagnosed', label: 'test wrong',     type: 'diagnose' },
+    { id: 'e23', source: 'verifyGreen',      target: 'fixEnv',           label: 'env wrong',      type: 'diagnose' },
+    { id: 'e24', source: 'fixTestDiagnosed', target: 'verifyRed',        label: 'recheck' },
+    { id: 'e25', source: 'fixEnv',           target: 'verifyRed',        label: 'recheck' },
+    { id: 'e26', source: 'fixEnv',           target: 'verifyGreen',      label: 'recheck' },
+    // Skip path
+    { id: 'e4',  source: 'verifyRed',        target: 'refactor',         label: 'already green',  type: 'skip' },
+    // Terminal failures
+    { id: 'e12', source: 'verifyRed',        target: 'skipped',          label: 'max retries',    type: 'fail' },
+    { id: 'e13', source: 'verifyGreen',      target: 'skipped',          label: 'max retries',    type: 'fail' },
+    { id: 'e14', source: 'writeTest',        target: 'skipped',          label: 'max retries',    type: 'fail' },
+    { id: 'e15', source: 'implement',        target: 'skipped',          label: 'max retries',    type: 'fail' },
   ],
 };
 
@@ -191,6 +207,7 @@ function dashboardHtml(): string {
     .graph-node.action { background: #1e293b; color: #93c5fd; border-color: #334155; }
     .graph-node.verify { background: #1a1a2e; color: #c4b5fd; border-color: #312e81; }
     .graph-node.terminal { background: #0f1117; color: #6b7280; border-color: #374151; font-size: 10px; }
+    .graph-node.diagnose { background: #1a1510; color: #fbbf24; border-color: #78350f; }
     .graph-node.active { border-color: #6366f1; box-shadow: 0 0 20px rgba(99,102,241,0.3); }
     .graph-node.passed { border-color: #22c55e; }
     .graph-node.failed { border-color: #ef4444; }
@@ -403,7 +420,8 @@ function renderGraph() {
     const color = edge.type === 'success' ? '#22c55e' :
                   edge.type === 'retry' ? '#f59e0b' :
                   edge.type === 'fail' ? '#ef4444' :
-                  edge.type === 'skip' ? '#6b7280' : '#374151';
+                  edge.type === 'skip' ? '#6b7280' :
+                  edge.type === 'diagnose' ? '#fbbf24' : '#374151';
 
     const opacity = isActiveEdge ? 0.9 : 0.3;
 

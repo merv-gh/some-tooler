@@ -11,6 +11,8 @@ services:
       - ./plan:/workspace/plan
       - ./logs:/workspace/logs
       - ./tooler/src:/workspace/tooler/src
+      - tooler_node_modules:/workspace/tooler/node_modules
+      - app_node_modules:/workspace/app/node_modules
     environment:
       - OLLAMA_URL=http://host.docker.internal:11434
       - OLLAMA_MODEL=${OLLAMA_MODEL:-qwen3.5}
@@ -30,8 +32,6 @@ services:
     restart: unless-stopped
 
   # ── One-shot: bootstrap app if empty ─────────────────────
-  # Runs as root so it can write to bind-mounted dirs,
-  # then chowns everything to 1000:1000 at the end.
   app-setup:
     image: node:20-slim
     working_dir: /workspace/app
@@ -39,6 +39,7 @@ services:
       - ./app:/workspace/app
       - ./logs:/workspace/logs
       - ./scripts:/workspace/scripts
+      - app_node_modules:/workspace/app/node_modules
     entrypoint: ["bash", "-c", "bash /workspace/scripts/init-app.sh && chown -R 1000:1000 /workspace/app /workspace/logs"]
     extra_hosts:
       - "host.docker.internal:host-gateway"
@@ -51,6 +52,7 @@ services:
     working_dir: /workspace/app
     volumes:
       - ./app:/workspace/app
+      - app_node_modules:/workspace/app/node_modules
     command: ["npx", "playwright", "test"]
     extra_hosts:
       - "host.docker.internal:host-gateway"
@@ -58,6 +60,10 @@ services:
       - e2e
     networks:
       - tooler-net
+
+volumes:
+  tooler_node_modules:
+  app_node_modules:
 
 networks:
   tooler-net:
