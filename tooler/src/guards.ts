@@ -228,6 +228,30 @@ export function createGuards(config: ToolerConfig, runner: TestRunner) {
     },
   };
 
+  // ── Test Framework API Guard ──────────────────────────────
+  // Catches wrong matchers BEFORE tests run (faster than diagnosis)
+
+  const checkTestAPI: GuardCheck = {
+    name: 'test-api-valid',
+    run: (ctx) => {
+      const testPath = join(config.appDir, ctx.task.testFile);
+      if (!existsSync(testPath)) {
+        return { ok: true, name: 'test-api-valid', detail: '○ test file not found, skipping' };
+      }
+      const code = readFileSync(testPath, 'utf-8');
+      const { checkTestFrameworkAPI } = require('./tools.js');
+      const issues = checkTestFrameworkAPI(code);
+      if (issues.length > 0) {
+        return {
+          ok: false,
+          name: 'test-api-valid',
+          detail: `✗ Wrong testing API:\n${issues.join('\n')}\nThese matchers don't exist in vitest.`,
+        };
+      }
+      return { ok: true, name: 'test-api-valid', detail: '✓ Test API usage correct (vitest compatible)' };
+    },
+  };
+
   // ── Model Output Guards ──────────────────────────────────
 
   const checkModelOutputHasCode: GuardCheck = {
@@ -264,6 +288,7 @@ export function createGuards(config: ToolerConfig, runner: TestRunner) {
     name: 'VERIFY_RED',
     checks: [
       checkTestFileExists,
+      checkTestAPI,           // catches wrong matchers BEFORE running
       checkTestCompiles,
       checkTestRuns,
       checkTestsFail,
@@ -311,6 +336,7 @@ export function createGuards(config: ToolerConfig, runner: TestRunner) {
       checkTestsPass,
       checkFailsOnAssertion,
       checkTestSanity,
+      checkTestAPI,
       checkAllTestsPass,
       checkModelOutputHasCode,
       checkModelOutputNotEmpty,

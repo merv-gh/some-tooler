@@ -1,6 +1,9 @@
 import express from 'express';
 import { trace } from './trace.js';
 import type { TraceEvent } from './trace.js';
+import { ToolRegistry } from './tools.js';
+import { Workspace } from './workspace.js';
+import type { ToolerConfig } from './types.js';
 
 const UI_PORT = parseInt(process.env.UI_PORT || '7700');
 
@@ -55,9 +58,12 @@ export function setAbortController(ac: AbortController) {
 // Server
 // ═══════════════════════════════════════════════════════════════
 
-export function startUiServer(): void {
+export function startUiServer(config: ToolerConfig): void {
   const app = express();
   app.use(express.json());
+
+  const tools = new ToolRegistry(config);
+  const workspace = new Workspace(config.appDir + '/../workspace');
 
   // ── SSE ──────────────────────────────────────────────────
   app.get('/api/events', (req, res) => {
@@ -67,27 +73,23 @@ export function startUiServer(): void {
       Connection: 'keep-alive',
       'Access-Control-Allow-Origin': '*',
     });
-    // Send current state
     res.write(`data: ${JSON.stringify({ type: 'snapshot', tasks: Object.fromEntries(runtime.tasks), currentTaskId: runtime.currentTaskId })}\n\n`);
-
     const unsub = trace.subscribe((event: TraceEvent) => {
       res.write(`data: ${JSON.stringify(event)}\n\n`);
     });
     req.on('close', unsub);
   });
 
-  // ── API: task list ───────────────────────────────────────
+  // ── API: tasks ──────────────────────────────────────────
   app.get('/api/tasks', (_req, res) => {
     res.json({ tasks: Object.fromEntries(runtime.tasks), currentTaskId: runtime.currentTaskId });
   });
-
-  // ── API: task events ─────────────────────────────────────
   app.get('/api/tasks/:id/events', (req, res) => {
     const events = runtime.events.filter(e => e.taskId === req.params.id);
     res.json({ events });
   });
 
-  // ── API: stop current task ───────────────────────────────
+  // ── API: stop ───────────────────────────────────────────
   app.post('/api/stop', (_req, res) => {
     if (runtime.abortController) {
       runtime.abortController.abort();
@@ -97,12 +99,33 @@ export function startUiServer(): void {
     }
   });
 
-  // ── API: state machine definition (for reactflow) ───────
+  // ── API: state machine def ──────────────────────────────
   app.get('/api/machine', (_req, res) => {
     res.json(MACHINE_DEFINITION);
   });
 
-  // ── Dashboard ────────────────────────────────────────────
+  // ── API: tools ──────────────────────────────────────────
+  app.get('/api/tools', (_req, res) => {
+    res.json({ tools: tools.listTools() });
+  });
+
+  app.post('/api/tools/:id', async (req, res) => {
+    const result = await tools.exec(req.params.id, req.body || {});
+    res.json(result);
+  });
+
+  // ── API: workspace ──────────────────────────────────────
+  app.get('/api/projects', (_req, res) => {
+    res.json({ projects: workspace.list() });
+  });
+  app.post('/api/projects', (req, res) => {
+    const { id, plan } = req.body;
+    if (!id) return res.status(400).json({ error: 'id required' });
+    const p = plan ? workspace.createFromPlan(id, plan) : workspace.createEmpty(id);
+    res.json({ project: p });
+  });
+
+  // ── Dashboard ───────────────────────────────────────────
   app.get('/', (_req, res) => {
     res.type('html').send(dashboardHtml());
   });
@@ -113,14 +136,14 @@ export function startUiServer(): void {
 }
 
 // ═══════════════════════════════════════════════════════════════
-// Machine definition — drives reactflow visualization
+// Machine definition
 // ═══════════════════════════════════════════════════════════════
 
 const MACHINE_DEFINITION = {
   nodes: [
     { id: 'writeTest',         label: 'Write Test',       type: 'action',    x: 0,    y: 150 },
     { id: 'verifyRed',         label: 'Verify RED',       type: 'verify',    x: 250,  y: 150,
-      guards: ['test-file-exists', 'test-compiles', 'test-runs', 'tests-fail', 'fails-on-assertion', 'test-sanity'] },
+      guards: ['test-file-exists', 'test-api-valid', 'test-compiles', 'test-runs', 'tests-fail', 'fails-on-assertion', 'test-sanity'] },
     { id: 'fixTestDiagnosed',  label: 'Fix Test',         type: 'diagnose',  x: 250,  y: 30 },
     { id: 'fixEnv',            label: 'Fix Env',          type: 'diagnose',  x: 500,  y: 30 },
     { id: 'implement',         label: 'Implement',        type: 'action',    x: 500,  y: 150 },
@@ -135,7 +158,6 @@ const MACHINE_DEFINITION = {
     { id: 'skipped',           label: 'SKIPPED',          type: 'terminal',  x: 1500, y: 200 },
   ],
   edges: [
-    // Main flow
     { id: 'e1',  source: 'writeTest',        target: 'verifyRed',        label: 'code written' },
     { id: 'e2',  source: 'verifyRed',        target: 'implement',        label: 'RED ✓',          type: 'success' },
     { id: 'e5',  source: 'implement',        target: 'verifyGreen',      label: 'code written' },
@@ -143,11 +165,9 @@ const MACHINE_DEFINITION = {
     { id: 'e8',  source: 'refactor',         target: 'verifyRefactor',   label: 'code changed' },
     { id: 'e9',  source: 'refactor',         target: 'done',             label: 'no changes' },
     { id: 'e10', source: 'verifyRefactor',   target: 'done',             label: 'pass' },
-    // Retry loops
     { id: 'e3',  source: 'verifyRed',        target: 'writeTest',        label: 'retry test',     type: 'retry' },
     { id: 'e7',  source: 'verifyGreen',      target: 'implement',        label: 'retry impl',     type: 'retry' },
     { id: 'e11', source: 'verifyRefactor',   target: 'done',             label: 'fail (accept)',  type: 'retry' },
-    // Diagnosis routing
     { id: 'e20', source: 'verifyRed',        target: 'fixTestDiagnosed', label: 'test wrong',     type: 'diagnose' },
     { id: 'e21', source: 'verifyRed',        target: 'fixEnv',           label: 'env wrong',      type: 'diagnose' },
     { id: 'e22', source: 'verifyGreen',      target: 'fixTestDiagnosed', label: 'test wrong',     type: 'diagnose' },
@@ -155,9 +175,7 @@ const MACHINE_DEFINITION = {
     { id: 'e24', source: 'fixTestDiagnosed', target: 'verifyRed',        label: 'recheck' },
     { id: 'e25', source: 'fixEnv',           target: 'verifyRed',        label: 'recheck' },
     { id: 'e26', source: 'fixEnv',           target: 'verifyGreen',      label: 'recheck' },
-    // Skip path
     { id: 'e4',  source: 'verifyRed',        target: 'refactor',         label: 'already green',  type: 'skip' },
-    // Terminal failures
     { id: 'e12', source: 'verifyRed',        target: 'skipped',          label: 'max retries',    type: 'fail' },
     { id: 'e13', source: 'verifyGreen',      target: 'skipped',          label: 'max retries',    type: 'fail' },
     { id: 'e14', source: 'writeTest',        target: 'skipped',          label: 'max retries',    type: 'fail' },
@@ -166,7 +184,7 @@ const MACHINE_DEFINITION = {
 };
 
 // ═══════════════════════════════════════════════════════════════
-// Dashboard HTML
+// Dashboard HTML — 3-panel layout
 // ═══════════════════════════════════════════════════════════════
 
 function dashboardHtml(): string {
@@ -201,7 +219,6 @@ function dashboardHtml(): string {
     .diff-rm  { color: #ef4444; background: rgba(239,68,68,0.06); }
     .tab-active { border-bottom: 2px solid #6366f1; color: #e5e7eb; }
     .tab-inactive { border-bottom: 2px solid transparent; color: #6b7280; }
-    /* State graph canvas */
     #graph-canvas { position: relative; overflow-x: auto; }
     .graph-node { position: absolute; border-radius: 8px; padding: 8px 14px; font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.05em; cursor: pointer; transition: all 0.2s; border: 2px solid transparent; }
     .graph-node.action { background: #1e293b; color: #93c5fd; border-color: #334155; }
@@ -215,12 +232,23 @@ function dashboardHtml(): string {
     .guard-pill.pass { background: rgba(34,197,94,0.15); color: #22c55e; }
     .guard-pill.fail { background: rgba(239,68,68,0.15); color: #ef4444; }
     .guard-pill.pending { background: rgba(107,114,128,0.15); color: #6b7280; }
+    .tool-card { transition: all 0.15s; }
+    .tool-card:hover { border-color: #6366f1; background: rgba(99,102,241,0.05); }
+    .tool-running { opacity: 0.6; pointer-events: none; }
+    .cat-badge { font-size: 9px; padding: 1px 6px; border-radius: 9999px; font-weight: 700; text-transform: uppercase; }
+    .cat-test { background: rgba(34,197,94,0.15); color: #22c55e; }
+    .cat-build { background: rgba(59,130,246,0.15); color: #60a5fa; }
+    .cat-guard { background: rgba(168,85,247,0.15); color: #c084fc; }
+    .cat-model { background: rgba(245,158,11,0.15); color: #fbbf24; }
+    .cat-shell { background: rgba(107,114,128,0.15); color: #9ca3af; }
+    .cat-recipe { background: rgba(236,72,153,0.15); color: #f472b6; }
+    .cat-project { background: rgba(20,184,166,0.15); color: #2dd4bf; }
   </style>
 </head>
-<body class="bg-surface text-gray-200 font-mono text-sm min-h-screen flex flex-col">
+<body class="bg-surface text-gray-200 font-mono text-sm h-screen flex flex-col overflow-hidden">
 
 <!-- Header -->
-<header class="border-b border-gray-800 px-4 py-2 flex items-center justify-between sticky top-0 bg-surface/95 backdrop-blur z-50">
+<header class="border-b border-gray-800 px-4 py-2 flex items-center justify-between flex-shrink-0 bg-surface/95 backdrop-blur z-50">
   <div class="flex items-center gap-3">
     <span class="text-base font-bold text-accent">⚡ TDD Tooler</span>
     <span id="status" class="px-2 py-0.5 rounded text-[10px] font-bold uppercase bg-gray-700 text-gray-300">connecting</span>
@@ -228,54 +256,109 @@ function dashboardHtml(): string {
   </div>
   <div class="flex items-center gap-2">
     <button onclick="stopTask()" class="px-2 py-1 rounded text-[10px] bg-fail/20 text-fail hover:bg-fail/30 font-bold">⏹ STOP</button>
-    <button onclick="toggleAutoScroll()" id="scrollBtn" class="px-2 py-1 rounded text-[10px] bg-surface-3 hover:bg-gray-700">⬇ scroll</button>
   </div>
 </header>
 
-<!-- Tabs -->
-<div class="border-b border-gray-800 px-4 flex gap-4">
-  <button onclick="switchTab('graph')" id="tab-graph" class="py-2 text-xs font-bold tab-active">State Machine</button>
-  <button onclick="switchTab('tasks')" id="tab-tasks" class="py-2 text-xs font-bold tab-inactive">Tasks</button>
-  <button onclick="switchTab('events')" id="tab-events" class="py-2 text-xs font-bold tab-inactive">Event Log</button>
-</div>
-
-<!-- Content -->
+<!-- 3-panel layout -->
 <div class="flex flex-1 overflow-hidden">
 
-  <!-- Main panel -->
-  <main class="flex-1 overflow-hidden flex flex-col">
+  <!-- ═══ LEFT PANEL: Projects ═══ -->
+  <aside id="leftPanel" class="w-[220px] border-r border-gray-800 flex flex-col flex-shrink-0 bg-surface-2">
+    <div class="px-3 py-2 border-b border-gray-800 flex items-center justify-between">
+      <span class="text-[10px] font-bold text-muted uppercase">Projects</span>
+      <button onclick="showNewProject()" class="text-accent hover:text-white text-lg leading-none" title="New project">+</button>
+    </div>
+    <!-- New project input (hidden) -->
+    <div id="newProjectRow" class="px-3 py-2 border-b border-gray-800 hidden">
+      <input id="newProjectId" type="text" placeholder="project-name" class="w-full bg-surface-3 border border-gray-700 rounded px-2 py-1 text-xs text-gray-200 focus:border-accent outline-none">
+      <div class="flex gap-1 mt-1">
+        <button onclick="createProject()" class="flex-1 text-[9px] bg-accent/20 text-accent rounded py-0.5 hover:bg-accent/30">Create</button>
+        <button onclick="hideNewProject()" class="flex-1 text-[9px] bg-surface-3 text-muted rounded py-0.5 hover:bg-gray-700">Cancel</button>
+      </div>
+    </div>
+    <div id="projectList" class="flex-1 overflow-y-auto"></div>
+    <!-- Task list for active project -->
+    <div class="border-t border-gray-800">
+      <div class="px-3 py-2 flex items-center justify-between">
+        <span class="text-[10px] font-bold text-muted uppercase">Tasks</span>
+      </div>
+      <div id="taskListSidebar" class="max-h-[250px] overflow-y-auto px-1 pb-2"></div>
+    </div>
+  </aside>
+
+  <!-- ═══ CENTER PANEL: Control Panel + Chat ═══ -->
+  <main class="flex-1 flex flex-col overflow-hidden">
+    <!-- Center tabs -->
+    <div class="border-b border-gray-800 px-4 flex gap-4 flex-shrink-0">
+      <button onclick="switchCenterTab('control')" id="ctab-control" class="py-2 text-xs font-bold tab-active">Control Panel</button>
+      <button onclick="switchCenterTab('graph')" id="ctab-graph" class="py-2 text-xs font-bold tab-inactive">State Machine</button>
+      <button onclick="switchCenterTab('chat')" id="ctab-chat" class="py-2 text-xs font-bold tab-inactive">Chat</button>
+    </div>
+
+    <!-- Tab: Control Panel -->
+    <div id="cpanel-control" class="flex-1 overflow-y-auto p-4">
+      <!-- Tool filter -->
+      <div class="flex items-center gap-2 mb-3 flex-wrap">
+        <span class="text-[10px] text-muted font-bold uppercase">Filter:</span>
+        <button onclick="filterTools('all')" data-filter="all" class="cat-badge bg-surface-3 text-gray-300 tool-filter active">All</button>
+        <button onclick="filterTools('test')" data-filter="test" class="cat-badge cat-test tool-filter">Test</button>
+        <button onclick="filterTools('build')" data-filter="build" class="cat-badge cat-build tool-filter">Build</button>
+        <button onclick="filterTools('guard')" data-filter="guard" class="cat-badge cat-guard tool-filter">Guard</button>
+        <button onclick="filterTools('model')" data-filter="model" class="cat-badge cat-model tool-filter">Model</button>
+        <button onclick="filterTools('shell')" data-filter="shell" class="cat-badge cat-shell tool-filter">Shell</button>
+        <button onclick="filterTools('project')" data-filter="project" class="cat-badge cat-project tool-filter">Project</button>
+      </div>
+      <!-- Tools grid -->
+      <div id="toolsGrid" class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3"></div>
+      <!-- Tool result -->
+      <div id="toolResult" class="mt-4 hidden">
+        <div class="flex items-center justify-between mb-2">
+          <h3 class="text-xs font-bold text-muted uppercase">Result</h3>
+          <div class="flex items-center gap-2">
+            <span id="toolResultStatus" class="cat-badge"></span>
+            <span id="toolResultTime" class="text-[9px] text-muted"></span>
+            <button onclick="hideToolResult()" class="text-muted hover:text-gray-300 text-lg leading-none">&times;</button>
+          </div>
+        </div>
+        <pre id="toolResultOutput" class="bg-surface-3 rounded p-3 text-[10px] max-h-[400px] overflow-y-auto border border-gray-800"></pre>
+      </div>
+    </div>
 
     <!-- Tab: State Machine Graph -->
-    <div id="panel-graph" class="flex-1 overflow-auto p-4">
+    <div id="cpanel-graph" class="flex-1 overflow-auto p-4 hidden">
       <div id="graph-canvas" class="relative" style="min-height: 350px; min-width: 1600px;">
         <svg id="graph-svg" class="absolute inset-0 w-full h-full" style="pointer-events:none;"></svg>
-        <!-- Nodes rendered by JS -->
-      </div>
-      <!-- Guard detail below graph -->
-      <div id="guard-detail" class="mt-4 hidden">
-        <h3 class="text-xs font-bold text-muted uppercase mb-2">Guard Checks</h3>
-        <div id="guard-pills" class="flex flex-wrap gap-1"></div>
       </div>
     </div>
 
-    <!-- Tab: Tasks -->
-    <div id="panel-tasks" class="flex-1 overflow-auto p-4 hidden">
-      <div id="task-list" class="space-y-2"></div>
-    </div>
-
-    <!-- Tab: Events -->
-    <div id="panel-events" class="flex-1 overflow-auto p-4 hidden">
-      <div id="events" class="space-y-0.5"></div>
+    <!-- Tab: Chat -->
+    <div id="cpanel-chat" class="flex-1 flex flex-col hidden">
+      <div id="chatMessages" class="flex-1 overflow-y-auto p-4 space-y-3"></div>
+      <div class="border-t border-gray-800 p-3 flex gap-2">
+        <input id="chatInput" type="text" placeholder="Ask the model anything..." class="flex-1 bg-surface-3 border border-gray-700 rounded px-3 py-2 text-xs text-gray-200 focus:border-accent outline-none" onkeydown="if(event.key==='Enter')sendChat()">
+        <button onclick="sendChat()" class="px-4 py-2 rounded text-xs bg-accent hover:bg-accent-dim text-white font-bold">Send</button>
+      </div>
     </div>
   </main>
 
-  <!-- Detail panel (right) -->
-  <aside id="detailPanel" class="w-[500px] border-l border-gray-800 overflow-y-auto p-4 flex-shrink-0 hidden">
-    <div class="flex items-center justify-between mb-3">
-      <h2 class="text-xs font-bold text-muted uppercase">Detail</h2>
-      <button onclick="closeDetail()" class="text-muted hover:text-gray-300 text-lg leading-none">&times;</button>
+  <!-- ═══ RIGHT PANEL: Logs ═══ -->
+  <aside id="rightPanel" class="w-[380px] border-l border-gray-800 flex flex-col flex-shrink-0">
+    <div class="border-b border-gray-800 px-3 py-2 flex items-center justify-between">
+      <span class="text-[10px] font-bold text-muted uppercase">Event Log</span>
+      <div class="flex items-center gap-2">
+        <button onclick="clearEvents()" class="text-[9px] text-muted hover:text-gray-300">Clear</button>
+        <button onclick="toggleAutoScroll()" id="scrollBtn" class="text-[9px] text-muted hover:text-gray-300">⬇ auto</button>
+      </div>
     </div>
-    <div id="detailContent"></div>
+    <div id="events" class="flex-1 overflow-y-auto p-2 space-y-0.5"></div>
+    <!-- Detail expand area -->
+    <div id="eventDetail" class="border-t border-gray-800 max-h-[300px] overflow-y-auto p-3 hidden">
+      <div class="flex items-center justify-between mb-2">
+        <span class="text-[10px] font-bold text-muted uppercase">Detail</span>
+        <button onclick="closeEventDetail()" class="text-muted hover:text-gray-300">&times;</button>
+      </div>
+      <div id="eventDetailContent"></div>
+    </div>
   </aside>
 </div>
 
@@ -288,22 +371,27 @@ const S = {
   tasks: {},
   currentTask: null,
   currentPhase: null,
-  guardResults: {},   // nodeId -> [{name,ok,detail}]
-  phaseHistory: [],   // which phases have been visited
+  guardResults: {},
+  phaseHistory: [],
   autoScroll: true,
   machineDef: null,
   completed: 0,
   total: 0,
+  tools: [],
+  toolFilter: 'all',
+  projects: [],
+  activeProject: null,
 };
 
 // ═══════════════════════════════════════════════════════════════
-// Tabs
+// Center Tabs
 // ═══════════════════════════════════════════════════════════════
-function switchTab(tab) {
-  ['graph','tasks','events'].forEach(t => {
-    document.getElementById('panel-'+t).classList.toggle('hidden', t !== tab);
-    document.getElementById('tab-'+t).className = 'py-2 text-xs font-bold ' + (t === tab ? 'tab-active' : 'tab-inactive');
+function switchCenterTab(tab) {
+  ['control','graph','chat'].forEach(t => {
+    document.getElementById('cpanel-'+t).classList.toggle('hidden', t !== tab);
+    document.getElementById('ctab-'+t).className = 'py-2 text-xs font-bold ' + (t === tab ? 'tab-active' : 'tab-inactive');
   });
+  if (tab === 'graph' && S.machineDef) renderGraph();
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -314,7 +402,6 @@ function connect() {
   es.onmessage = (e) => {
     const ev = JSON.parse(e.data);
     if (ev.type === 'snapshot') {
-      // Initial state
       Object.entries(ev.tasks||{}).forEach(([id,t]) => { S.tasks[id] = t; });
       S.currentTask = ev.currentTaskId;
       S.total = Object.keys(S.tasks).length;
@@ -336,7 +423,6 @@ function connect() {
 
 function handleEvent(e) {
   S.events.push(e);
-
   switch (e.type) {
     case 'task_start':
       S.currentTask = e.taskId;
@@ -362,7 +448,6 @@ function handleEvent(e) {
       S.guardResults[S.currentPhase].push({ name: e.data.name, ok: e.data.ok, detail: e.data.detail });
       break;
   }
-
   updateUI();
   appendEventRow(e);
 }
@@ -372,8 +457,210 @@ function handleEvent(e) {
 // ═══════════════════════════════════════════════════════════════
 function updateUI() {
   document.getElementById('taskCount').textContent = S.completed + '/' + S.total;
+  renderTaskSidebar();
   renderGraph();
-  renderTaskList();
+}
+
+// ═══════════════════════════════════════════════════════════════
+// Projects Panel
+// ═══════════════════════════════════════════════════════════════
+async function loadProjects() {
+  try {
+    const res = await fetch('/api/projects');
+    const data = await res.json();
+    S.projects = data.projects || [];
+    renderProjects();
+  } catch { /* offline */ }
+}
+
+function renderProjects() {
+  const c = document.getElementById('projectList');
+  c.innerHTML = '';
+  if (S.projects.length === 0) {
+    c.innerHTML = '<div class="px-3 py-4 text-[10px] text-muted text-center">No projects yet</div>';
+    return;
+  }
+  for (const p of S.projects) {
+    const isActive = S.activeProject === p.id;
+    const el = document.createElement('div');
+    el.className = 'px-3 py-2 cursor-pointer hover:bg-surface-3 flex items-center gap-2 ' + (isActive ? 'bg-accent/10 border-l-2 border-accent' : '');
+    const icon = p.hasplan ? '📋' : '📁';
+    const progress = p.tasksTotal > 0 ? ' (' + p.tasksDone + '/' + p.tasksTotal + ')' : '';
+    el.innerHTML = '<span>' + icon + '</span><div class="flex-1 min-w-0"><div class="text-xs font-bold truncate">' + esc(p.name) + '</div><div class="text-[9px] text-muted truncate">' + p.id + progress + '</div></div>';
+    el.onclick = () => { S.activeProject = p.id; renderProjects(); };
+    c.appendChild(el);
+  }
+}
+
+function showNewProject() { document.getElementById('newProjectRow').classList.remove('hidden'); document.getElementById('newProjectId').focus(); }
+function hideNewProject() { document.getElementById('newProjectRow').classList.add('hidden'); }
+async function createProject() {
+  const id = document.getElementById('newProjectId').value.trim();
+  if (!id) return;
+  await fetch('/api/projects', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id }) });
+  document.getElementById('newProjectId').value = '';
+  hideNewProject();
+  loadProjects();
+}
+
+// ═══════════════════════════════════════════════════════════════
+// Task Sidebar
+// ═══════════════════════════════════════════════════════════════
+function renderTaskSidebar() {
+  const c = document.getElementById('taskListSidebar');
+  c.innerHTML = '';
+  const tasks = Object.values(S.tasks);
+  if (tasks.length === 0) {
+    c.innerHTML = '<div class="px-2 py-2 text-[9px] text-muted text-center">No tasks</div>';
+    return;
+  }
+  for (const t of tasks) {
+    const el = document.createElement('div');
+    const isCurrent = t.id === S.currentTask && t.status === 'running';
+    const icon = t.status === 'done' ? '<span class="text-ok">✓</span>' : t.status === 'skipped' ? '<span class="text-fail">✗</span>' : isCurrent ? '<span class="text-accent">▸</span>' : '<span class="text-muted">○</span>';
+    el.className = 'px-2 py-1 rounded text-[10px] flex items-center gap-2 hover:bg-surface-3 cursor-pointer ' + (isCurrent ? 'bg-accent/5' : '');
+    el.innerHTML = icon + '<span class="truncate flex-1 ' + (isCurrent ? 'text-gray-200' : 'text-muted') + '">' + esc(t.title || t.id) + '</span>' + (isCurrent && t.phase ? '<span class="text-[8px] text-accent bg-accent/10 px-1 rounded">' + t.phase + '</span>' : '');
+    el.onclick = () => showTaskEvents(t.id);
+    c.appendChild(el);
+  }
+}
+
+function showTaskEvents(taskId) {
+  const c = document.getElementById('events');
+  c.innerHTML = '';
+  const taskEvents = S.events.filter(e => e.taskId === taskId);
+  for (const e of taskEvents) appendEventRow(e);
+}
+
+// ═══════════════════════════════════════════════════════════════
+// Control Panel — Tools
+// ═══════════════════════════════════════════════════════════════
+async function loadTools() {
+  const res = await fetch('/api/tools');
+  const data = await res.json();
+  S.tools = data.tools;
+  renderTools();
+}
+
+function filterTools(cat) {
+  S.toolFilter = cat;
+  document.querySelectorAll('.tool-filter').forEach(b => {
+    b.classList.toggle('active', b.dataset.filter === cat);
+    if (b.dataset.filter === cat) b.style.outline = '1px solid rgba(99,102,241,0.5)';
+    else b.style.outline = 'none';
+  });
+  renderTools();
+}
+
+function renderTools() {
+  const grid = document.getElementById('toolsGrid');
+  grid.innerHTML = '';
+  const filtered = S.toolFilter === 'all' ? S.tools : S.tools.filter(t => t.category === S.toolFilter);
+
+  for (const tool of filtered) {
+    const card = document.createElement('div');
+    card.className = 'tool-card border border-gray-800 rounded-lg p-3 bg-surface-2';
+    card.id = 'tool-' + tool.id.replace('.', '-');
+
+    let paramsHtml = '';
+    if (tool.params && tool.params.length > 0) {
+      paramsHtml = '<div class="mt-2 space-y-1">';
+      for (const p of tool.params) {
+        paramsHtml += '<input type="text" data-tool="' + tool.id + '" data-param="' + p.name + '" placeholder="' + (p.placeholder || p.name) + (p.required ? ' *' : '') + '" class="w-full bg-surface-3 border border-gray-700 rounded px-2 py-1 text-[10px] text-gray-200 focus:border-accent outline-none">';
+      }
+      paramsHtml += '</div>';
+    }
+
+    card.innerHTML =
+      '<div class="flex items-center justify-between mb-1">' +
+        '<div class="flex items-center gap-2">' +
+          '<span class="cat-badge cat-' + tool.category + '">' + tool.category + '</span>' +
+          '<span class="text-xs font-bold text-gray-200">' + tool.name + '</span>' +
+        '</div>' +
+        '<button onclick="runTool(\\''+tool.id+'\\')" class="px-2 py-0.5 rounded text-[9px] bg-accent/20 text-accent hover:bg-accent/30 font-bold">Run</button>' +
+      '</div>' +
+      '<div class="text-[10px] text-muted">' + tool.description + '</div>' +
+      paramsHtml;
+
+    grid.appendChild(card);
+  }
+}
+
+async function runTool(toolId) {
+  const card = document.getElementById('tool-' + toolId.replace('.', '-'));
+  if (card) card.classList.add('tool-running');
+
+  // Gather params
+  const params = {};
+  document.querySelectorAll('input[data-tool="' + toolId + '"]').forEach(inp => {
+    if (inp.value.trim()) params[inp.dataset.param] = inp.value.trim();
+  });
+
+  try {
+    const res = await fetch('/api/tools/' + toolId, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(params),
+    });
+    const result = await res.json();
+    showToolResult(toolId, result);
+  } catch (err) {
+    showToolResult(toolId, { ok: false, output: err.message, duration: 0 });
+  } finally {
+    if (card) card.classList.remove('tool-running');
+  }
+}
+
+function showToolResult(toolId, result) {
+  const panel = document.getElementById('toolResult');
+  panel.classList.remove('hidden');
+  document.getElementById('toolResultStatus').textContent = result.ok ? 'PASS' : 'FAIL';
+  document.getElementById('toolResultStatus').className = 'cat-badge ' + (result.ok ? 'cat-test' : 'bg-fail/15 text-fail');
+  document.getElementById('toolResultTime').textContent = toolId + ' — ' + result.duration + 'ms';
+  document.getElementById('toolResultOutput').textContent = result.output || '(no output)';
+  panel.scrollIntoView({ behavior: 'smooth', block: 'start' });
+}
+
+function hideToolResult() { document.getElementById('toolResult').classList.add('hidden'); }
+
+// ═══════════════════════════════════════════════════════════════
+// Chat
+// ═══════════════════════════════════════════════════════════════
+async function sendChat() {
+  const inp = document.getElementById('chatInput');
+  const prompt = inp.value.trim();
+  if (!prompt) return;
+  inp.value = '';
+
+  addChatMessage('user', prompt);
+  addChatMessage('assistant', '⏳ Thinking...');
+
+  try {
+    const res = await fetch('/api/tools/model.chat', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ prompt }),
+    });
+    const result = await res.json();
+    // Replace thinking message
+    const msgs = document.getElementById('chatMessages');
+    msgs.lastChild.remove();
+    addChatMessage('assistant', result.output || '(no response)');
+  } catch (err) {
+    const msgs = document.getElementById('chatMessages');
+    msgs.lastChild.remove();
+    addChatMessage('assistant', '❌ ' + err.message);
+  }
+}
+
+function addChatMessage(role, text) {
+  const c = document.getElementById('chatMessages');
+  const el = document.createElement('div');
+  const isUser = role === 'user';
+  el.className = 'rounded-lg p-3 text-xs ' + (isUser ? 'bg-accent/10 border border-accent/20 ml-12' : 'bg-surface-2 border border-gray-800 mr-12');
+  el.innerHTML = '<div class="text-[9px] text-muted mb-1 font-bold uppercase">' + role + '</div><pre class="text-gray-200">' + esc(text) + '</pre>';
+  c.appendChild(el);
+  c.scrollTop = c.scrollHeight;
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -389,8 +676,8 @@ function renderGraph() {
   if (!S.machineDef) return;
   const canvas = document.getElementById('graph-canvas');
   const svg = document.getElementById('graph-svg');
+  if (!canvas || !svg) return;
 
-  // Clear non-svg children
   Array.from(canvas.children).forEach(c => { if (c !== svg) c.remove(); });
   svg.innerHTML = '';
 
@@ -409,7 +696,6 @@ function renderGraph() {
     const tx = tgt.x * SCALE + PAD;
     const ty = tgt.y * SCALE + PAD + 18;
 
-    // Is this edge active?
     const isActiveEdge = S.phaseHistory.length > 1 && (() => {
       for (let i = 0; i < S.phaseHistory.length - 1; i++) {
         if (S.phaseHistory[i] === edge.source && S.phaseHistory[i+1] === edge.target) return true;
@@ -424,13 +710,9 @@ function renderGraph() {
                   edge.type === 'diagnose' ? '#fbbf24' : '#374151';
 
     const opacity = isActiveEdge ? 0.9 : 0.3;
-
-    // Bezier curve
     const mx = (sx + tx) / 2;
-    const isSelfLoop = edge.source === edges.find(e2 => e2.target === edge.source)?.source;
     let path;
     if (tx < sx) {
-      // Backward edge (retry) — arc above/below
       const arcY = sy < ty ? Math.min(sy, ty) - 50 : Math.max(sy, ty) + 50;
       path = 'M ' + sx + ' ' + sy + ' C ' + sx + ' ' + arcY + ', ' + tx + ' ' + arcY + ', ' + tx + ' ' + ty;
     } else {
@@ -445,7 +727,6 @@ function renderGraph() {
     pathEl.setAttribute('opacity', String(opacity));
     if (!isActiveEdge) pathEl.setAttribute('stroke-dasharray', '4 3');
 
-    // Arrowhead
     const marker = document.createElementNS('http://www.w3.org/2000/svg', 'marker');
     const mid = 'arrow-' + edge.id;
     marker.setAttribute('id', mid);
@@ -455,14 +736,12 @@ function renderGraph() {
     marker.setAttribute('refY', '3');
     marker.setAttribute('orient', 'auto');
     marker.innerHTML = '<polygon points="0 0, 8 3, 0 6" fill="' + color + '" opacity="' + opacity + '"/>';
-
     const defs = document.createElementNS('http://www.w3.org/2000/svg', 'defs');
     defs.appendChild(marker);
     svg.appendChild(defs);
     pathEl.setAttribute('marker-end', 'url(#' + mid + ')');
     svg.appendChild(pathEl);
 
-    // Edge label
     if (edge.label && isActiveEdge) {
       const labelEl = document.createElementNS('http://www.w3.org/2000/svg', 'text');
       labelEl.setAttribute('x', String(mx));
@@ -494,7 +773,6 @@ function renderGraph() {
     el.style.top = (node.y * SCALE + PAD) + 'px';
     el.innerHTML = node.label;
 
-    // Guard pills under verify nodes
     if (node.guards && node.guards.length > 0) {
       const guardDiv = document.createElement('div');
       guardDiv.className = 'mt-1 flex flex-wrap gap-0.5';
@@ -506,120 +784,65 @@ function renderGraph() {
         pill.className = 'guard-pill ' + cls;
         pill.textContent = g.replace('check-','').replace('test-','t:').replace('source-','s:').replace('fails-on-','');
         pill.title = r ? r.detail : 'pending';
-        pill.onclick = (ev) => { ev.stopPropagation(); showGuardDetail(g, r); };
+        pill.onclick = (ev) => { ev.stopPropagation(); showGuardInLog(g, r); };
         guardDiv.appendChild(pill);
       }
       el.appendChild(guardDiv);
     }
 
-    el.onclick = () => showNodeDetail(node);
+    el.onclick = () => showNodeInLog(node);
     canvas.appendChild(el);
   }
 }
 
-function showGuardDetail(name, result) {
+function showGuardInLog(name, result) {
   if (!result) return;
-  showDetailPanel('Guard: ' + name, '<pre class="bg-surface-3 rounded p-3 text-xs border border-gray-800">' + esc(result.detail) + '</pre>');
+  showEventDetailContent('Guard: ' + name, '<pre class="bg-surface-3 rounded p-3 text-[10px] border border-gray-800">' + esc(result.detail) + '</pre>');
 }
 
-function showNodeDetail(node) {
-  let html = '<div class="space-y-3">';
-  html += '<h3 class="font-bold text-accent">' + node.label + '</h3>';
-  html += '<div class="text-xs text-muted">Type: ' + node.type + '</div>';
+function showNodeInLog(node) {
+  let html = '<div class="space-y-2">';
+  html += '<h3 class="font-bold text-accent text-xs">' + node.label + '</h3>';
   if (node.guards) {
-    html += '<h4 class="text-xs font-bold text-muted uppercase mt-3">Guards (in order)</h4>';
-    html += '<ol class="list-decimal list-inside text-xs space-y-1">';
+    html += '<div class="text-[10px]">';
     const results = S.guardResults[node.id] || [];
     for (const g of node.guards) {
       const r = results.find(r => r.name === g);
       const icon = r ? (r.ok ? '✓' : '✗') : '○';
       const color = r ? (r.ok ? 'text-ok' : 'text-fail') : 'text-muted';
-      html += '<li class="' + color + '">' + icon + ' ' + g;
-      if (r && !r.ok) html += '<pre class="ml-4 text-[10px] text-fail/70 mt-0.5">' + esc(r.detail) + '</pre>';
-      html += '</li>';
-    }
-    html += '</ol>';
-  }
-  // Show events for this phase
-  const phaseEvents = S.events.filter(e => e.phase === node.id && e.taskId === S.currentTask);
-  if (phaseEvents.length > 0) {
-    html += '<h4 class="text-xs font-bold text-muted uppercase mt-3">Events (' + phaseEvents.length + ')</h4>';
-    html += '<div class="space-y-1 max-h-[400px] overflow-y-auto">';
-    for (const e of phaseEvents) {
-      const { icon, summary } = fmtEvent(e);
-      html += '<div class="text-[10px] text-gray-400 cursor-pointer hover:text-gray-200" onclick=\\'showEventDetail(' + S.events.indexOf(e) + ')\\'>' + icon + ' ' + esc(summary).slice(0,100) + '</div>';
+      html += '<div class="' + color + '">' + icon + ' ' + g;
+      if (r && !r.ok) html += '<pre class="ml-3 text-[9px] text-fail/70">' + esc(r.detail) + '</pre>';
+      html += '</div>';
     }
     html += '</div>';
   }
   html += '</div>';
-  showDetailPanel('Node: ' + node.label, html);
+  showEventDetailContent('Node: ' + node.label, html);
 }
 
 // ═══════════════════════════════════════════════════════════════
-// Task List
-// ═══════════════════════════════════════════════════════════════
-function renderTaskList() {
-  const container = document.getElementById('task-list');
-  container.innerHTML = '';
-
-  for (const [id, t] of Object.entries(S.tasks)) {
-    const el = document.createElement('div');
-    const isCurrent = id === S.currentTask && t.status === 'running';
-    const bg = isCurrent ? 'border-accent/40 bg-accent/5' : t.status === 'done' ? 'border-ok/20 bg-ok/5' : t.status === 'skipped' ? 'border-fail/20 bg-fail/5' : 'border-gray-800 bg-surface-2';
-
-    const icon = t.status === 'done' ? '✅' : t.status === 'skipped' ? '⛔' : t.status === 'running' ? '🔄' : '○';
-
-    el.className = 'border rounded-lg p-3 ' + bg;
-    el.innerHTML =
-      '<div class="flex items-center justify-between">' +
-        '<div class="flex items-center gap-2">' +
-          '<span>' + icon + '</span>' +
-          '<span class="font-bold text-xs">' + id + '</span>' +
-          '<span class="text-xs text-muted">' + esc(t.title || '') + '</span>' +
-        '</div>' +
-        '<div class="flex items-center gap-2">' +
-          (isCurrent ? '<span class="px-2 py-0.5 rounded text-[9px] font-bold bg-accent/20 text-accent uppercase">' + (t.phase || '…') + '</span>' : '') +
-          '<button onclick="viewTaskEvents(\\'' + id + '\\')" class="px-2 py-0.5 rounded text-[9px] bg-surface-3 hover:bg-gray-700 text-muted">events</button>' +
-        '</div>' +
-      '</div>' +
-      (t.reason ? '<div class="text-[10px] text-fail/70 mt-1">' + esc(t.reason) + '</div>' : '');
-
-    container.appendChild(el);
-  }
-}
-
-function viewTaskEvents(taskId) {
-  switchTab('events');
-  const container = document.getElementById('events');
-  container.innerHTML = '';
-  const taskEvents = S.events.filter(e => e.taskId === taskId);
-  for (const e of taskEvents) appendEventRow(e);
-}
-
-// ═══════════════════════════════════════════════════════════════
-// Event Log
+// Event Log (Right Panel)
 // ═══════════════════════════════════════════════════════════════
 function appendEventRow(e) {
   const container = document.getElementById('events');
   const row = document.createElement('div');
-  row.className = 'fade-in flex items-start gap-2 py-0.5 px-2 rounded hover:bg-surface-2 cursor-pointer';
+  row.className = 'fade-in flex items-start gap-2 py-0.5 px-1 rounded hover:bg-surface-2 cursor-pointer text-[10px]';
   row.onclick = () => showEventDetail(S.events.indexOf(e));
 
-  const time = e.ts.split('T')[1].split('.')[0];
+  const time = e.ts ? e.ts.split('T')[1].split('.')[0] : '';
   const { icon, color, summary } = fmtEvent(e);
 
   row.innerHTML =
-    '<span class="text-muted text-[9px] w-14 flex-shrink-0 pt-0.5">' + time + '</span>' +
-    '<span class="w-4 text-center flex-shrink-0">' + icon + '</span>' +
-    '<span class="' + color + ' text-[10px] w-24 flex-shrink-0 truncate font-semibold">' + e.type + '</span>' +
-    '<span class="text-[10px] text-gray-400 truncate flex-1">' + esc(summary) + '</span>';
+    '<span class="text-muted text-[9px] w-12 flex-shrink-0">' + time + '</span>' +
+    '<span class="w-3 text-center flex-shrink-0">' + icon + '</span>' +
+    '<span class="' + color + ' w-20 flex-shrink-0 truncate font-semibold">' + e.type + '</span>' +
+    '<span class="text-gray-400 truncate flex-1">' + esc(summary) + '</span>';
 
   container.appendChild(row);
-  if (S.autoScroll) {
-    const panel = document.getElementById('panel-events');
-    panel.scrollTop = panel.scrollHeight;
-  }
+  if (S.autoScroll) container.scrollTop = container.scrollHeight;
 }
+
+function clearEvents() { document.getElementById('events').innerHTML = ''; }
 
 function fmtEvent(e) {
   switch (e.type) {
@@ -632,66 +855,60 @@ function fmtEvent(e) {
     case 'model_request':    return { icon: '→',  color: 'text-warn',    summary: e.data.promptType + ' (' + e.data.promptChars + 'ch)' };
     case 'model_done':       return { icon: '←',  color: 'text-warn',    summary: (e.data.outputChars||0) + 'ch ' + (e.data.codeBlocks||0) + 'blk' };
     case 'model_empty':      return { icon: '⚠',  color: 'text-fail',    summary: e.data.reason };
-    case 'code_apply':       return { icon: '📝', color: 'text-ok',      summary: e.data.file + ' (' + e.data.chars + 'ch) ' + (e.data.isNew ? 'NEW' : 'UPD') };
+    case 'code_apply':       return { icon: '📝', color: 'text-ok',      summary: e.data.file + ' (' + e.data.chars + 'ch)' };
     case 'test_result':      return { icon: e.data.passed ? '✓' : '✗', color: e.data.passed ? 'text-ok' : 'text-fail', summary: (e.data.passedTests||0) + '/' + (e.data.totalTests||0) + ' pass' };
     case 'test_error_detail':return { icon: '🔍', color: 'text-fail',    summary: (e.data.details||[])[0] || '' };
     case 'file_diff':        return { icon: '±',  color: 'text-muted',   summary: e.data.file + ' +' + e.data.added + ' -' + e.data.removed };
     case 'retry':            return { icon: '↩',  color: 'text-warn',    summary: e.data.phase + ': ' + e.data.reason };
     case 'error':            return { icon: '❌', color: 'text-fail',    summary: e.data.message };
-    default:                 return { icon: '·',  color: 'text-muted',   summary: JSON.stringify(e.data).slice(0,80) };
+    default:                 return { icon: '·',  color: 'text-muted',   summary: JSON.stringify(e.data||{}).slice(0,60) };
   }
 }
 
 // ═══════════════════════════════════════════════════════════════
-// Detail Panel
+// Event Detail (bottom of right panel)
 // ═══════════════════════════════════════════════════════════════
 function showEventDetail(idx) {
   const e = S.events[idx];
   if (!e) return;
 
-  let html = '<div class="space-y-3">';
-  html += '<div class="flex items-center gap-2"><span class="px-2 py-0.5 rounded text-[10px] font-bold bg-accent/20 text-accent">' + e.type + '</span><span class="text-[10px] text-muted">' + e.ts + '</span></div>';
-  html += '<div class="text-[10px] text-muted">Task: ' + e.taskId + ' | Phase: ' + (e.phase||'-') + '</div>';
+  let html = '<div class="space-y-2">';
+  html += '<div class="flex items-center gap-2"><span class="cat-badge bg-accent/20 text-accent">' + e.type + '</span><span class="text-[9px] text-muted">' + e.ts + '</span></div>';
 
   switch (e.type) {
     case 'model_request':
-      html += sec('Prompt (' + e.data.promptType + ')', '<pre class="bg-surface-3 rounded p-3 text-[10px] max-h-[500px] overflow-y-auto border border-gray-800">' + esc(e.data.prompt||'') + '</pre>');
+      html += '<pre class="bg-surface-3 rounded p-2 text-[9px] max-h-[200px] overflow-y-auto border border-gray-800">' + esc(e.data.prompt||'').slice(0, 2000) + '</pre>';
       break;
     case 'model_done':
-      html += sec('Output', '<pre class="bg-surface-3 rounded p-3 text-[10px] max-h-[500px] overflow-y-auto border border-gray-800">' + highlightCode(e.data.output||'') + '</pre>');
-      if (e.data.thinking) html += sec('🧠 Thinking', '<pre class="bg-surface-3 rounded p-3 text-[10px] max-h-[200px] overflow-y-auto border border-warn/20 text-warn/60">' + esc(e.data.thinking) + '</pre>');
-      break;
-    case 'code_apply':
-      html += sec('File: ' + e.data.file, e.data.diff
-        ? '<pre class="bg-surface-3 rounded p-3 text-[10px] max-h-[500px] overflow-y-auto border border-gray-800">' + renderDiff(e.data.diff) + '</pre>'
-        : '<pre class="bg-surface-3 rounded p-3 text-[10px] max-h-[500px] overflow-y-auto border border-gray-800">' + esc(e.data.content||'(update)') + '</pre>'
-      );
+      html += '<pre class="bg-surface-3 rounded p-2 text-[9px] max-h-[200px] overflow-y-auto border border-gray-800">' + esc(e.data.output||'').slice(0, 2000) + '</pre>';
+      if (e.data.thinking) html += '<pre class="bg-surface-3 rounded p-2 text-[9px] max-h-[100px] overflow-y-auto border border-warn/20 text-warn/60 mt-1">' + esc(e.data.thinking).slice(0, 500) + '</pre>';
       break;
     case 'test_result':
-      html += sec('Test Output', '<pre class="bg-surface-3 rounded p-3 text-[10px] max-h-[500px] overflow-y-auto border border-gray-800">' + esc(e.data.output||'') + '</pre>');
+      html += '<pre class="bg-surface-3 rounded p-2 text-[9px] max-h-[200px] overflow-y-auto border border-gray-800">' + esc(e.data.output||'').slice(0, 2000) + '</pre>';
       break;
     case 'test_error_detail':
-      html += sec('Error Details', '<pre class="bg-surface-3 rounded p-3 text-[10px] max-h-[500px] overflow-y-auto border border-fail/20 text-fail/80">' + esc((e.data.details||[]).join('\\n')) + '</pre>');
+      html += '<pre class="bg-surface-3 rounded p-2 text-[9px] max-h-[200px] overflow-y-auto border border-fail/20 text-fail/80">' + esc((e.data.details||[]).join('\\n')) + '</pre>';
       break;
     case 'guard_result':
-      html += sec('Guard: ' + e.data.name, '<pre class="bg-surface-3 rounded p-3 text-[10px] border border-gray-800">' + esc(e.data.detail||'') + '</pre>');
+      html += '<pre class="bg-surface-3 rounded p-2 text-[9px] border border-gray-800">' + esc(e.data.detail||'') + '</pre>';
+      break;
+    case 'code_apply':
+      html += '<pre class="bg-surface-3 rounded p-2 text-[9px] max-h-[200px] overflow-y-auto border border-gray-800">' + esc(e.data.content||e.data.diff||'(update)').slice(0, 2000) + '</pre>';
       break;
     default:
-      html += sec('Data', '<pre class="bg-surface-3 rounded p-3 text-[10px] max-h-[500px] overflow-y-auto border border-gray-800">' + esc(JSON.stringify(e.data,null,2)) + '</pre>');
+      html += '<pre class="bg-surface-3 rounded p-2 text-[9px] max-h-[200px] overflow-y-auto border border-gray-800">' + esc(JSON.stringify(e.data,null,2)) + '</pre>';
   }
   html += '</div>';
-  showDetailPanel(e.type, html);
+  showEventDetailContent(e.type, html);
 }
 
-function showDetailPanel(title, html) {
-  document.getElementById('detailPanel').classList.remove('hidden');
-  document.getElementById('detailContent').innerHTML = html;
+function showEventDetailContent(title, html) {
+  const panel = document.getElementById('eventDetail');
+  panel.classList.remove('hidden');
+  document.getElementById('eventDetailContent').innerHTML = html;
 }
-function closeDetail() { document.getElementById('detailPanel').classList.add('hidden'); }
 
-function sec(title, content) {
-  return '<h4 class="text-[10px] font-bold text-muted uppercase mt-3">' + title + '</h4>' + content;
-}
+function closeEventDetail() { document.getElementById('eventDetail').classList.add('hidden'); }
 
 // ═══════════════════════════════════════════════════════════════
 // Actions
@@ -704,27 +921,21 @@ async function stopTask() {
 
 function toggleAutoScroll() {
   S.autoScroll = !S.autoScroll;
-  document.getElementById('scrollBtn').textContent = S.autoScroll ? '⬇ scroll' : '⏸ paused';
+  document.getElementById('scrollBtn').textContent = S.autoScroll ? '⬇ auto' : '⏸ paused';
 }
 
 // ═══════════════════════════════════════════════════════════════
 // Helpers
 // ═══════════════════════════════════════════════════════════════
 function esc(s) { return (s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
-function highlightCode(s) { return esc(s).replace(/\`\`\`(\\S*)/g, '<span class="text-accent font-bold">\`\`\`$1</span>'); }
-function renderDiff(d) {
-  return (d||'').split('\\n').map(l => {
-    if (l.startsWith('+') && !l.startsWith('+++')) return '<span class="diff-add">' + esc(l) + '</span>';
-    if (l.startsWith('-') && !l.startsWith('---')) return '<span class="diff-rm">' + esc(l) + '</span>';
-    return esc(l);
-  }).join('\\n');
-}
 
 // ═══════════════════════════════════════════════════════════════
 // Init
 // ═══════════════════════════════════════════════════════════════
 connect();
 initGraph();
+loadTools();
+loadProjects();
 </script>
 </body>
 </html>`;

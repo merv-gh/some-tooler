@@ -59,7 +59,7 @@ async function main() {
 
   // Configure trace + start UI
   trace.configure(config.logDir);
-  startUiServer();
+  startUiServer(config);
 
   // Connectivity check
   const client = new OllamaClient(config);
