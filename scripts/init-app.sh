@@ -1,23 +1,22 @@
 #!/bin/bash
 set -e
 
+APP_DIR="${APP_DIR:-/workspace/app}"
+
 # If app already has package.json, skip init
-if [ -f "/workspace/app/package.json" ]; then
+if [ -f "$APP_DIR/package.json" ]; then
   echo "App already initialized. Installing deps..."
-  cd /workspace/app
+  cd "$APP_DIR"
   npm install
   exit 0
 fi
 
-echo "=== Initializing app with shadcn template ==="
-cd /workspace
+echo "=== Initializing app with vite react-ts ==="
 
-# Create vite react-ts project
-npx --yes create-vite@latest app-tmp --template react-ts
-cp -r app-tmp/* app-tmp/.* app/ 2>/dev/null || true
-rm -rf app-tmp
+# Create vite project directly in app dir (no tmp dir needed)
+cd "$APP_DIR"
+npx --yes create-vite@latest . --template react-ts
 
-cd /workspace/app
 npm install
 
 # Install shadcn
@@ -53,7 +52,7 @@ cat > src/test-setup.ts << 'SETUP_EOF'
 import '@testing-library/jest-dom/vitest'
 SETUP_EOF
 
-# Create __tests__ dir
+# Create dirs
 mkdir -p src/__tests__ src/components src/lib
 
 echo "=== App initialized ==="
