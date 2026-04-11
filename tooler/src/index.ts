@@ -71,6 +71,13 @@ async function main() {
   const progress = loadProgress();
   console.log(`✓ Progress: ${progress.completedTasks.length} done, ${progress.skippedTasks.length} skipped\n`);
 
+  // On re-run: clear skipped tasks so they get retried
+  if (progress.skippedTasks.length > 0) {
+    console.log(`♻  Clearing ${progress.skippedTasks.length} previously skipped tasks for retry`);
+    progress.skippedTasks = [];
+    saveProgress(progress);
+  }
+
   let completed = 0;
   let skipped = 0;
 
@@ -78,11 +85,6 @@ async function main() {
     if (progress.completedTasks.includes(task.id)) {
       console.log(`⏭  ${task.id} — already done`);
       completed++;
-      continue;
-    }
-    if (progress.skippedTasks.includes(task.id)) {
-      console.log(`⏭  ${task.id} — previously skipped`);
-      skipped++;
       continue;
     }
 
@@ -96,8 +98,9 @@ async function main() {
       progress.completedTasks.push(task.id);
       completed++;
     } else {
-      progress.skippedTasks.push(task.id);
+      // Don't persist skip — will retry on next run
       skipped++;
+      console.log(`  ↪ Will retry ${task.id} on next run`);
     }
 
     saveProgress(progress);

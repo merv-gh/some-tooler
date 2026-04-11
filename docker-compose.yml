@@ -6,6 +6,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.tooler
+    user: "${UID:-1000}:${GID:-1000}"
     volumes:
       - ./app:/workspace/app
       - ./plan:/workspace/plan
@@ -30,6 +31,7 @@ services:
   # ── One-shot: bootstrap app if empty ─────────────────────
   app-setup:
     image: node:20-slim
+    user: "${UID:-1000}:${GID:-1000}"
     working_dir: /workspace/app
     volumes:
       - ./app:/workspace/app

@@ -2,16 +2,19 @@ FROM node:20-slim
 
 RUN apt-get update && apt-get install -y git && rm -rf /var/lib/apt/lists/*
 
+# Create workspace owned by node user (uid 1000)
+RUN mkdir -p /workspace/app /workspace/plan /workspace/logs /workspace/tooler \
+    && chown -R 1000:1000 /workspace
+
 WORKDIR /workspace/tooler
 
-# Install tooler deps
-COPY tooler/package.json tooler/tsconfig.json ./
+# Install tooler deps as node user
+COPY --chown=1000:1000 tooler/package.json tooler/package-lock.json* tooler/tsconfig.json ./
 RUN npm install
 
 # Copy tooler source
-COPY tooler/src ./src
+COPY --chown=1000:1000 tooler/src ./src
 
-# App dir will be mounted as volume
 WORKDIR /workspace/tooler
 
 CMD ["npx", "tsx", "src/index.ts"]
