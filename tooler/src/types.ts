@@ -105,7 +105,5 @@ export interface ToolerConfig {
   planFile: string;
   maxAttemptsPerPhase: number;
   maxAttemptsPerTask: number;
-  testCommand: string;
-  unitTestCommand: string;
   logDir: string;
 }

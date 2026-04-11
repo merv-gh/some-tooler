@@ -15,8 +15,6 @@ const config: ToolerConfig = {
   planFile: process.env.PLAN_FILE || join(process.cwd(), '..', 'plan', 'plan.md'),
   maxAttemptsPerPhase: parseInt(process.env.MAX_PHASE_ATTEMPTS || '3'),
   maxAttemptsPerTask: parseInt(process.env.MAX_TASK_ATTEMPTS || '15'),
-  testCommand: 'npx playwright test',
-  unitTestCommand: 'npx vitest',
   logDir: join(process.cwd(), '..', 'logs'),
 };
 
