@@ -1,18 +1,21 @@
 FROM node:20-slim
 
-RUN apt-get update && apt-get install -y git && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y git curl && rm -rf /var/lib/apt/lists/*
+
+# Install ast-grep
+RUN curl -fsSL https://raw.githubusercontent.com/nicolo-ribaudo/ast-grep-prebuilt/main/install.sh | bash -s -- --to /usr/local/bin 2>/dev/null || \
+    npm install -g @ast-grep/cli 2>/dev/null || \
+    echo "ast-grep install skipped (will use text fallback)"
 
 # Create workspace
-RUN mkdir -p /workspace/app /workspace/plan /workspace/logs /workspace/tooler \
+RUN mkdir -p /workspace/projects /workspace/plan /workspace/logs /workspace/tooler \
     && chown -R 1000:1000 /workspace
 
 WORKDIR /workspace/tooler
 
-# Copy package files — use separate COPY per file to avoid glob issues
+# Copy package files
 COPY tooler/package.json ./package.json
 COPY tooler/tsconfig.json ./tsconfig.json
-
-# Copy lockfile if exists (separate layer, optional)
 COPY tooler/package-lock.jso[n] ./
 
 # Install ALL deps (including devDependencies for @types)

@@ -7,16 +7,15 @@ services:
       context: .
       dockerfile: Dockerfile.tooler
     volumes:
-      - ./app:/workspace/app
+      - ./workspace:/workspace/projects
       - ./plan:/workspace/plan
       - ./logs:/workspace/logs
       - ./tooler/src:/workspace/tooler/src
       - tooler_node_modules:/workspace/tooler/node_modules
-      - app_node_modules:/workspace/app/node_modules
     environment:
       - OLLAMA_URL=http://host.docker.internal:11434
       - OLLAMA_MODEL=${OLLAMA_MODEL:-qwen3.5}
-      - APP_DIR=/workspace/app
+      - WORKSPACE_DIR=/workspace/projects
       - PLAN_FILE=/workspace/plan/plan.md
       - MAX_PHASE_ATTEMPTS=${MAX_PHASE_ATTEMPTS:-3}
       - MAX_TASK_ATTEMPTS=${MAX_TASK_ATTEMPTS:-15}
@@ -24,35 +23,16 @@ services:
       - "${UI_PORT:-7700}:7700"
     extra_hosts:
       - "host.docker.internal:host-gateway"
-    depends_on:
-      app-setup:
-        condition: service_completed_successfully
     networks:
       - tooler-net
     restart: unless-stopped
 
-  # ── One-shot: bootstrap app if empty ─────────────────────
-  app-setup:
-    image: node:20-slim
-    working_dir: /workspace/app
-    volumes:
-      - ./app:/workspace/app
-      - ./logs:/workspace/logs
-      - ./scripts:/workspace/scripts
-      - app_node_modules:/workspace/app/node_modules
-    entrypoint: ["bash", "-c", "bash /workspace/scripts/init-app.sh && chown -R 1000:1000 /workspace/app /workspace/logs"]
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
-    networks:
-      - tooler-net
-
   # ── Playwright for e2e (activate with --profile e2e) ─────
   playwright:
     image: mcr.microsoft.com/playwright:v1.48.0-noble
-    working_dir: /workspace/app
+    working_dir: /workspace/projects
     volumes:
-      - ./app:/workspace/app
-      - app_node_modules:/workspace/app/node_modules
+      - ./workspace:/workspace/projects
     command: ["npx", "playwright", "test"]
     extra_hosts:
       - "host.docker.internal:host-gateway"
@@ -63,7 +43,6 @@ services:
 
 volumes:
   tooler_node_modules:
-  app_node_modules:
 
 networks:
   tooler-net:

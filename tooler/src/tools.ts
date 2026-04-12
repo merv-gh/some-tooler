@@ -8,6 +8,7 @@ import { ScriptManager } from './project-scripts.js';
 import { createGuards, runVerifyChain } from './guards.js';
 import { SYSTEM_PROMPT } from './prompts.js';
 import { trace } from './trace.js';
+import { RecipeRegistry } from './recipes.js';
 
 // ═══════════════════════════════════════════════════════════════
 // Tool registry — every action the control panel can invoke
@@ -35,12 +36,19 @@ export class ToolRegistry {
   private ollama: OllamaClient;
   private scripts: ScriptManager;
   private devProcess: ChildProcess | null = null;
+  private recipes: RecipeRegistry;
 
   constructor(config: ToolerConfig) {
     this.config = config;
     this.runner = new TestRunner(config);
     this.ollama = new OllamaClient(config);
     this.scripts = new ScriptManager(config.appDir);
+    this.recipes = new RecipeRegistry();
+  }
+
+  /** Get recipe registry (for UI listing) */
+  getRecipes(): RecipeRegistry {
+    return this.recipes;
   }
 
   /** All available tools */
@@ -247,8 +255,19 @@ export class ToolRegistry {
         return { ok: true, output: info.map(s => `${s.key}: [${s.source}] ${s.command}`).join('\n') };
       }
 
-      default:
+      default: {
+        // Try recipe registry: recipe.<id>
+        if (id.startsWith('recipe.')) {
+          const recipeId = id.slice('recipe.'.length);
+          const result = await this.recipes.run(recipeId, this.config.appDir, p, this);
+          return {
+            ok: result.ok,
+            output: result.output,
+            data: { filesCreated: result.filesCreated, filesModified: result.filesModified, stepResults: result.stepResults },
+          };
+        }
         return { ok: false, output: `Unknown tool: ${id}` };
+      }
     }
   }
 

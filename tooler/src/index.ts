@@ -6,12 +6,18 @@ import { runTaskWithMachine } from './machine.js';
 import { OllamaClient } from './ollama.js';
 import { trace } from './trace.js';
 import { startUiServer } from './ui-server.js';
+import { Workspace } from './workspace.js';
 
 // ── Config ───────────────────────────────────────────────────
+const workspaceDir = process.env.WORKSPACE_DIR || process.env.APP_DIR || join(process.cwd(), '..', 'workspace');
+// If APP_DIR is set explicitly (legacy), use it; otherwise first project in workspace or 'default'
+const appDir = process.env.APP_DIR || join(workspaceDir, 'default');
+
 const config: ToolerConfig = {
   ollamaUrl: process.env.OLLAMA_URL || 'http://localhost:11434',
   model: process.env.OLLAMA_MODEL || 'qwen3.5',
-  appDir: process.env.APP_DIR || join(process.cwd(), '..', 'app'),
+  workspaceDir,
+  appDir,
   planFile: process.env.PLAN_FILE || join(process.cwd(), '..', 'plan', 'plan.md'),
   maxAttemptsPerPhase: parseInt(process.env.MAX_PHASE_ATTEMPTS || '3'),
   maxAttemptsPerTask: parseInt(process.env.MAX_TASK_ATTEMPTS || '15'),
@@ -48,11 +54,19 @@ function saveProgress(p: Progress): void {
 
 // ── Main ─────────────────────────────────────────────────────
 async function main() {
+  // Ensure workspace + default project exist with working scripts
+  const ws = new Workspace(config.workspaceDir);
+  if (!ws.exists('default') && !process.env.APP_DIR) {
+    ws.createEmpty('default');
+    console.log('✓ Created default project in workspace');
+  }
+
   console.log('╔══════════════════════════════════════════════════╗');
   console.log('║  TDD TOOLER — XState Guardrailed Agent Loop     ║');
   console.log('╠══════════════════════════════════════════════════╣');
   console.log(`║  Model:  ${config.model.padEnd(39)}║`);
   console.log(`║  Ollama: ${config.ollamaUrl.padEnd(39)}║`);
+  console.log(`║  Work:   ${config.workspaceDir.slice(-38).padEnd(39)}║`);
   console.log(`║  App:    ${config.appDir.slice(-38).padEnd(39)}║`);
   console.log('╚══════════════════════════════════════════════════╝');
   console.log('');

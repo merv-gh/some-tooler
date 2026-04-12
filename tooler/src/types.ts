@@ -101,6 +101,9 @@ export interface HistoryEntry {
 export interface ToolerConfig {
   ollamaUrl: string;
   model: string;
+  /** Root workspace dir containing all projects */
+  workspaceDir: string;
+  /** Active project dir (derived: workspaceDir/activeProject) */
   appDir: string;
   planFile: string;
   maxAttemptsPerPhase: number;

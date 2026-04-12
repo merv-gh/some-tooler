@@ -63,7 +63,7 @@ export function startUiServer(config: ToolerConfig): void {
   app.use(express.json());
 
   const tools = new ToolRegistry(config);
-  const workspace = new Workspace(config.appDir + '/../workspace');
+  const workspace = new Workspace(config.workspaceDir);
 
   // ── SSE ──────────────────────────────────────────────────
   app.get('/api/events', (req, res) => {
@@ -109,9 +109,16 @@ export function startUiServer(config: ToolerConfig): void {
     res.json({ tools: tools.listTools() });
   });
 
-  app.post('/api/tools/:id', async (req, res) => {
-    const result = await tools.exec(req.params.id, req.body || {});
+  app.post('/api/tools/*', async (req, res) => {
+    // Handles both tool IDs like "test.run" and recipe IDs like "recipe.scaffold.test"
+    const toolId = (req.params as any)[0] as string;
+    const result = await tools.exec(toolId, req.body || {});
     res.json(result);
+  });
+
+  // ── API: recipes ────────────────────────────────────────
+  app.get('/api/recipes', (_req, res) => {
+    res.json({ recipes: tools.getRecipes().list() });
   });
 
   // ── API: workspace ──────────────────────────────────────
@@ -307,6 +314,7 @@ function dashboardHtml(): string {
         <button onclick="filterTools('model')" data-filter="model" class="cat-badge cat-model tool-filter">Model</button>
         <button onclick="filterTools('shell')" data-filter="shell" class="cat-badge cat-shell tool-filter">Shell</button>
         <button onclick="filterTools('project')" data-filter="project" class="cat-badge cat-project tool-filter">Project</button>
+        <button onclick="filterTools('recipe')" data-filter="recipe" class="cat-badge cat-recipe tool-filter">Recipe</button>
       </div>
       <!-- Tools grid -->
       <div id="toolsGrid" class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3"></div>
@@ -536,9 +544,29 @@ function showTaskEvents(taskId) {
 // Control Panel — Tools
 // ═══════════════════════════════════════════════════════════════
 async function loadTools() {
-  const res = await fetch('/api/tools');
-  const data = await res.json();
-  S.tools = data.tools;
+  const [toolsRes, recipesRes] = await Promise.all([
+    fetch('/api/tools'),
+    fetch('/api/recipes'),
+  ]);
+  const toolsData = await toolsRes.json();
+  const recipesData = await recipesRes.json();
+  S.tools = toolsData.tools;
+
+  // Merge recipes into tools list as category 'recipe'
+  for (const r of (recipesData.recipes || [])) {
+    S.tools.push({
+      id: 'recipe.' + r.id,
+      name: r.name,
+      category: 'recipe',
+      description: r.description,
+      params: (r.params || []).map(p => ({
+        name: p.name,
+        type: 'string',
+        required: p.required,
+        placeholder: p.description + (p.default ? ' [' + p.default + ']' : ''),
+      })),
+    });
+  }
   renderTools();
 }
 
