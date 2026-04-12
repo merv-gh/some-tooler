@@ -109,10 +109,9 @@ export function startUiServer(config: ToolerConfig): void {
     res.json({ tools: tools.listTools() });
   });
 
-  app.post('/api/tools/*', async (req, res) => {
-    // Handles both tool IDs like "test.run" and recipe IDs like "recipe.scaffold.test"
-    const toolId = (req.params as any)[0] as string;
-    const result = await tools.exec(toolId, req.body || {});
+  app.post('/api/tools/:id', async (req, res) => {
+    // tool IDs like "test.run" — dots are fine in Express params
+    const result = await tools.exec(req.params.id, req.body || {});
     res.json(result);
   });
 
