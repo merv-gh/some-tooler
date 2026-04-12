@@ -458,6 +458,66 @@ Respond with the corrected file in a code block.`;
       toolStep('Run all tests', 'test.all'),
     ],
   },
+
+  // ── Scaffold: Init frontend (Vite + shadcn + vitest) ───
+  {
+    id: 'scaffold.frontend',
+    name: 'Init Frontend',
+    description: 'Scaffold Vite + React + shadcn/ui + vitest project from scratch',
+    category: 'scaffold',
+    params: [
+      { name: 'name', description: 'Project name', default: 'app' },
+    ],
+    steps: (p) => {
+      const name = p.name || 'app';
+      return [
+        shellStep('Create Vite project', (ctx) =>
+          `npm create vite@latest ${name} -- --template react-ts 2>&1 || true`,
+          { timeout: 60_000 }
+        ),
+        shellStep('Install deps', (ctx) =>
+          `cd ${name} && npm install 2>&1`,
+          { timeout: 120_000 }
+        ),
+        shellStep('Init shadcn', (ctx) =>
+          `cd ${name} && npx shadcn@latest init --preset b0 --template vite -y 2>&1`,
+          { timeout: 120_000 }
+        ),
+        shellStep('Install vitest + testing-library', (ctx) =>
+          `cd ${name} && npm install -D vitest @testing-library/react @testing-library/jest-dom jsdom 2>&1`,
+          { timeout: 60_000 }
+        ),
+        {
+          label: 'Create vitest config',
+          run: (ctx) => {
+            const dir = join(ctx.appDir, name);
+            const cfg = `/// <reference types="vitest" />
+import { defineConfig } from 'vite';
+import react from '@vitejs/plugin-react';
+import path from 'path';
+
+export default defineConfig({
+  plugins: [react()],
+  resolve: { alias: { '@': path.resolve(__dirname, './src') } },
+  test: {
+    globals: true,
+    environment: 'jsdom',
+    setupFiles: ['./src/test-setup.ts'],
+  },
+});
+`;
+            writeFileSync(join(dir, 'vitest.config.ts'), cfg, 'utf-8');
+            writeFileSync(join(dir, 'src', 'test-setup.ts'),
+              `import '@testing-library/jest-dom';\n`, 'utf-8');
+            return { ok: true, output: 'Created vitest.config.ts + test-setup.ts', filesCreated: ['vitest.config.ts', 'src/test-setup.ts'] };
+          },
+        },
+        shellStep('Verify tests run', (ctx) =>
+          `cd ${name} && npx vitest --run 2>&1 || true`
+        ),
+      ];
+    },
+  },
 ];
 
 // ═══════════════════════════════════════════════════════════════

@@ -7,22 +7,24 @@ RUN curl -fsSL https://raw.githubusercontent.com/nicolo-ribaudo/ast-grep-prebuil
     npm install -g @ast-grep/cli 2>/dev/null || \
     echo "ast-grep install skipped (will use text fallback)"
 
-# Create workspace
+# Create workspace — owned by node user (UID 1000)
 RUN mkdir -p /workspace/projects /workspace/plan /workspace/logs /workspace/tooler \
     && chown -R 1000:1000 /workspace
 
 WORKDIR /workspace/tooler
 
 # Copy package files
-COPY tooler/package.json ./package.json
-COPY tooler/tsconfig.json ./tsconfig.json
+COPY --chown=1000:1000 tooler/package.json ./package.json
+COPY --chown=1000:1000 tooler/tsconfig.json ./tsconfig.json
 COPY tooler/package-lock.jso[n] ./
 
-# Install ALL deps (including devDependencies for @types)
-RUN npm install
+# Install ALL deps as root (needs write to global cache), then fix ownership
+RUN npm install && chown -R 1000:1000 /workspace/tooler
 
 # Copy tooler source
-COPY tooler/src ./src
+COPY --chown=1000:1000 tooler/src ./src
 
-# Entrypoint: verify deps then run
+# Run as non-root — files created on mounted volumes will be UID 1000
+USER 1000
+
 CMD ["sh", "-c", "npm install --prefer-offline --no-audit 2>/dev/null; exec npx tsx src/index.ts"]

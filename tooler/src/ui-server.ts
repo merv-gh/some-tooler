@@ -1,4 +1,6 @@
 import express from 'express';
+import { join } from 'path';
+import { readdirSync } from 'fs';
 import { trace } from './trace.js';
 import type { TraceEvent } from './trace.js';
 import { ToolRegistry } from './tools.js';
@@ -118,6 +120,34 @@ export function startUiServer(config: ToolerConfig): void {
   // ── API: recipes ────────────────────────────────────────
   app.get('/api/recipes', (_req, res) => {
     res.json({ recipes: tools.getRecipes().list() });
+  });
+
+  // ── API: skills ─────────────────────────────────────────
+  app.get('/api/skills', (_req, res) => {
+    res.json({ skills: tools.getSkills().map(s => ({ id: s.id, name: s.name, description: s.description })) });
+  });
+
+  // ── API: self (tooler dir for self-improvement) ────────
+  app.get('/api/self/files', (_req, res) => {
+    const toolerSrc = join(config.workspaceDir, '..', 'tooler', 'src');
+    try {
+      const files = readdirSync(toolerSrc).filter((f: string) => f.endsWith('.ts'));
+      res.json({ files, dir: toolerSrc });
+    } catch (e: any) {
+      res.json({ files: [], dir: toolerSrc, error: e.message });
+    }
+  });
+
+  app.post('/api/self/run', async (req, res) => {
+    // Run a tool/recipe targeting tooler's own source
+    const { toolId, params } = req.body;
+    const toolerDir = join(config.workspaceDir, '..', 'tooler');
+    // Override appDir for this execution
+    const selfConfig = { ...config, appDir: toolerDir };
+    const { ToolRegistry: SelfTools } = await import('./tools.js');
+    const selfTools = new SelfTools(selfConfig);
+    const result = await selfTools.exec(toolId, params || {});
+    res.json(result);
   });
 
   // ── API: workspace ──────────────────────────────────────
@@ -249,6 +279,7 @@ function dashboardHtml(): string {
     .cat-shell { background: rgba(107,114,128,0.15); color: #9ca3af; }
     .cat-recipe { background: rgba(236,72,153,0.15); color: #f472b6; }
     .cat-project { background: rgba(20,184,166,0.15); color: #2dd4bf; }
+    .cat-skill { background: rgba(251,191,36,0.15); color: #fbbf24; }
   </style>
 </head>
 <body class="bg-surface text-gray-200 font-mono text-sm h-screen flex flex-col overflow-hidden">
@@ -299,6 +330,7 @@ function dashboardHtml(): string {
       <button onclick="switchCenterTab('control')" id="ctab-control" class="py-2 text-xs font-bold tab-active">Control Panel</button>
       <button onclick="switchCenterTab('graph')" id="ctab-graph" class="py-2 text-xs font-bold tab-inactive">State Machine</button>
       <button onclick="switchCenterTab('chat')" id="ctab-chat" class="py-2 text-xs font-bold tab-inactive">Chat</button>
+      <button onclick="switchCenterTab('self')" id="ctab-self" class="py-2 text-xs font-bold tab-inactive">Self</button>
     </div>
 
     <!-- Tab: Control Panel -->
@@ -314,6 +346,7 @@ function dashboardHtml(): string {
         <button onclick="filterTools('shell')" data-filter="shell" class="cat-badge cat-shell tool-filter">Shell</button>
         <button onclick="filterTools('project')" data-filter="project" class="cat-badge cat-project tool-filter">Project</button>
         <button onclick="filterTools('recipe')" data-filter="recipe" class="cat-badge cat-recipe tool-filter">Recipe</button>
+        <button onclick="filterTools('skill')" data-filter="skill" class="cat-badge cat-skill tool-filter">Skill</button>
       </div>
       <!-- Tools grid -->
       <div id="toolsGrid" class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3"></div>
@@ -344,6 +377,23 @@ function dashboardHtml(): string {
       <div class="border-t border-gray-800 p-3 flex gap-2">
         <input id="chatInput" type="text" placeholder="Ask the model anything..." class="flex-1 bg-surface-3 border border-gray-700 rounded px-3 py-2 text-xs text-gray-200 focus:border-accent outline-none" onkeydown="if(event.key==='Enter')sendChat()">
         <button onclick="sendChat()" class="px-4 py-2 rounded text-xs bg-accent hover:bg-accent-dim text-white font-bold">Send</button>
+      </div>
+    </div>
+
+    <!-- Tab: Self (apply tools/recipes on tooler itself) -->
+    <div id="cpanel-self" class="flex-1 flex flex-col hidden">
+      <div class="p-4 border-b border-gray-800">
+        <h3 class="text-xs font-bold text-warn uppercase mb-2">⚠ Self-Modification Mode</h3>
+        <p class="text-[10px] text-muted mb-3">Run tools and recipes targeting tooler's own source code. Changes apply to <code>tooler/src/</code>.</p>
+        <div id="selfFiles" class="flex flex-wrap gap-1 mb-3"></div>
+        <div class="flex gap-2">
+          <select id="selfTool" class="flex-1 bg-surface-3 border border-gray-700 rounded px-2 py-1 text-[10px] text-gray-200 focus:border-warn outline-none"></select>
+          <button onclick="runSelfTool()" class="px-3 py-1 rounded text-[9px] bg-warn/20 text-warn hover:bg-warn/30 font-bold">Run</button>
+        </div>
+        <div class="mt-2 space-y-1" id="selfParams"></div>
+      </div>
+      <div id="selfOutput" class="flex-1 overflow-y-auto p-4">
+        <pre id="selfResult" class="bg-surface-3 rounded p-3 text-[10px] border border-gray-800 text-muted">Select a tool and run it...</pre>
       </div>
     </div>
   </main>
@@ -394,11 +444,12 @@ const S = {
 // Center Tabs
 // ═══════════════════════════════════════════════════════════════
 function switchCenterTab(tab) {
-  ['control','graph','chat'].forEach(t => {
+  ['control','graph','chat','self'].forEach(t => {
     document.getElementById('cpanel-'+t).classList.toggle('hidden', t !== tab);
     document.getElementById('ctab-'+t).className = 'py-2 text-xs font-bold ' + (t === tab ? 'tab-active' : 'tab-inactive');
   });
   if (tab === 'graph' && S.machineDef) renderGraph();
+  if (tab === 'self') loadSelf();
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -543,15 +594,17 @@ function showTaskEvents(taskId) {
 // Control Panel — Tools
 // ═══════════════════════════════════════════════════════════════
 async function loadTools() {
-  const [toolsRes, recipesRes] = await Promise.all([
+  const [toolsRes, recipesRes, skillsRes] = await Promise.all([
     fetch('/api/tools'),
     fetch('/api/recipes'),
+    fetch('/api/skills'),
   ]);
   const toolsData = await toolsRes.json();
   const recipesData = await recipesRes.json();
+  const skillsData = await skillsRes.json();
   S.tools = toolsData.tools;
 
-  // Merge recipes into tools list as category 'recipe'
+  // Merge recipes into tools list
   for (const r of (recipesData.recipes || [])) {
     S.tools.push({
       id: 'recipe.' + r.id,
@@ -566,6 +619,18 @@ async function loadTools() {
       })),
     });
   }
+
+  // Merge skills — each skill gets a prompt param
+  for (const sk of (skillsData.skills || [])) {
+    S.tools.push({
+      id: sk.id,
+      name: sk.name,
+      category: 'skill',
+      description: sk.description,
+      params: [{ name: 'prompt', type: 'string', required: true, placeholder: 'What should this skill do?' }],
+    });
+  }
+
   renderTools();
 }
 
@@ -949,6 +1014,83 @@ async function stopTask() {
 function toggleAutoScroll() {
   S.autoScroll = !S.autoScroll;
   document.getElementById('scrollBtn').textContent = S.autoScroll ? '⬇ auto' : '⏸ paused';
+}
+
+// ═══════════════════════════════════════════════════════════════
+// Self-Modification Tab
+// ═══════════════════════════════════════════════════════════════
+let selfLoaded = false;
+async function loadSelf() {
+  if (selfLoaded) return;
+  selfLoaded = true;
+
+  // Load tooler source files
+  const filesRes = await fetch('/api/self/files');
+  const filesData = await filesRes.json();
+  const filesEl = document.getElementById('selfFiles');
+  for (const f of (filesData.files || [])) {
+    const pill = document.createElement('span');
+    pill.className = 'cat-badge bg-surface-3 text-gray-400 cursor-pointer hover:text-gray-200';
+    pill.textContent = f;
+    pill.onclick = () => {
+      // Auto-fill file param if a tool is selected
+      const paramInputs = document.querySelectorAll('#selfParams input');
+      if (paramInputs.length > 0) paramInputs[0].value = 'src/' + f;
+    };
+    filesEl.appendChild(pill);
+  }
+
+  // Populate tool selector with all tools + recipes
+  const sel = document.getElementById('selfTool');
+  sel.innerHTML = '';
+  for (const t of S.tools) {
+    const opt = document.createElement('option');
+    opt.value = t.id;
+    opt.textContent = '[' + t.category + '] ' + t.name;
+    sel.appendChild(opt);
+  }
+  sel.onchange = updateSelfParams;
+  updateSelfParams();
+}
+
+function updateSelfParams() {
+  const sel = document.getElementById('selfTool');
+  const toolId = sel.value;
+  const tool = S.tools.find(t => t.id === toolId);
+  const paramsEl = document.getElementById('selfParams');
+  paramsEl.innerHTML = '';
+  if (tool && tool.params) {
+    for (const p of tool.params) {
+      const inp = document.createElement('input');
+      inp.type = 'text';
+      inp.dataset.param = p.name;
+      inp.placeholder = (p.placeholder || p.name) + (p.required ? ' *' : '');
+      inp.className = 'w-full bg-surface-3 border border-gray-700 rounded px-2 py-1 text-[10px] text-gray-200 focus:border-warn outline-none';
+      paramsEl.appendChild(inp);
+    }
+  }
+}
+
+async function runSelfTool() {
+  const toolId = document.getElementById('selfTool').value;
+  const params = {};
+  document.querySelectorAll('#selfParams input').forEach(inp => {
+    if (inp.value.trim()) params[inp.dataset.param] = inp.value.trim();
+  });
+
+  document.getElementById('selfResult').textContent = 'Running ' + toolId + '...';
+  try {
+    const res = await fetch('/api/self/run', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ toolId, params }),
+    });
+    const result = await res.json();
+    const status = result.ok ? '✓ PASS' : '✗ FAIL';
+    document.getElementById('selfResult').textContent = status + ' (' + (result.duration||0) + 'ms)\\n\\n' + (result.output || '(no output)');
+  } catch (err) {
+    document.getElementById('selfResult').textContent = '❌ ' + err.message;
+  }
 }
 
 // ═══════════════════════════════════════════════════════════════

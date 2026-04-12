@@ -9,6 +9,7 @@ import { createGuards, runVerifyChain } from './guards.js';
 import { SYSTEM_PROMPT } from './prompts.js';
 import { trace } from './trace.js';
 import { RecipeRegistry } from './recipes.js';
+import { loadSkills, buildSkillPrompt, type SkillDef } from './skills.js';
 
 // ═══════════════════════════════════════════════════════════════
 // Tool registry — every action the control panel can invoke
@@ -17,7 +18,7 @@ import { RecipeRegistry } from './recipes.js';
 export interface ToolDef {
   id: string;
   name: string;
-  category: 'test' | 'build' | 'guard' | 'model' | 'shell' | 'recipe' | 'project';
+  category: 'test' | 'build' | 'guard' | 'model' | 'shell' | 'recipe' | 'project' | 'skill';
   description: string;
   /** Parameters the tool accepts */
   params?: Array<{ name: string; type: 'string' | 'boolean'; required?: boolean; placeholder?: string }>;
@@ -37,6 +38,7 @@ export class ToolRegistry {
   private scripts: ScriptManager;
   private devProcess: ChildProcess | null = null;
   private recipes: RecipeRegistry;
+  private skills: SkillDef[];
 
   constructor(config: ToolerConfig) {
     this.config = config;
@@ -44,11 +46,25 @@ export class ToolRegistry {
     this.ollama = new OllamaClient(config);
     this.scripts = new ScriptManager(config.appDir);
     this.recipes = new RecipeRegistry();
+    // Load skills from project-level and workspace-level .claude/skills/
+    this.skills = loadSkills([
+      config.appDir,
+      config.workspaceDir,
+      join(config.workspaceDir, '..'),  // tooler root (where .claude/ lives)
+    ]);
+    if (this.skills.length > 0) {
+      console.log(`  [tools] Loaded ${this.skills.length} skill(s): ${this.skills.map(s => s.name).join(', ')}`);
+    }
   }
 
   /** Get recipe registry (for UI listing) */
   getRecipes(): RecipeRegistry {
     return this.recipes;
+  }
+
+  /** Get loaded skills */
+  getSkills(): SkillDef[] {
+    return this.skills;
   }
 
   /** All available tools */
@@ -265,6 +281,14 @@ export class ToolRegistry {
             output: result.output,
             data: { filesCreated: result.filesCreated, filesModified: result.filesModified, stepResults: result.stepResults },
           };
+        }
+        // Try skill execution: skill.<name>
+        if (id.startsWith('skill.')) {
+          const skill = this.skills.find(s => s.id === id);
+          if (!skill) return { ok: false, output: `Unknown skill: ${id}` };
+          const prompt = buildSkillPrompt(skill, p.prompt || '');
+          const r = await this.ollama.generate(prompt, SYSTEM_PROMPT);
+          return { ok: true, output: r.content, data: { tokensUsed: r.tokensUsed, skill: skill.name } };
         }
         return { ok: false, output: `Unknown tool: ${id}` };
       }

@@ -1,1 +1,4 @@
 node_modules/
+
+.claude/config.json
+.claude/session/
