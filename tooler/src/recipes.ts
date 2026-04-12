@@ -460,38 +460,52 @@ Respond with the corrected file in a code block.`;
   },
 
   // ── Scaffold: Init frontend (Vite + shadcn + vitest) ───
+  // Runs IN the selected project dir (appDir), not a subdirectory
   {
     id: 'scaffold.frontend',
     name: 'Init Frontend',
-    description: 'Scaffold Vite + React + shadcn/ui + vitest project from scratch',
+    description: 'Scaffold Vite + React + shadcn/ui + vitest in current project dir',
     category: 'scaffold',
-    params: [
-      { name: 'name', description: 'Project name', default: 'app' },
-    ],
-    steps: (p) => {
-      const name = p.name || 'app';
-      return [
-        shellStep('Create Vite project', (ctx) =>
-          `npm create vite@latest ${name} -- --template react-ts 2>&1 || true`,
-          { timeout: 60_000 }
-        ),
-        shellStep('Install deps', (ctx) =>
-          `cd ${name} && npm install 2>&1`,
-          { timeout: 120_000 }
-        ),
-        shellStep('Init shadcn', (ctx) =>
-          `cd ${name} && npx shadcn@latest init --preset b0 --template vite -y 2>&1`,
-          { timeout: 120_000 }
-        ),
-        shellStep('Install vitest + testing-library', (ctx) =>
-          `cd ${name} && npm install -D vitest @testing-library/react @testing-library/jest-dom jsdom 2>&1`,
-          { timeout: 60_000 }
-        ),
-        {
-          label: 'Create vitest config',
-          run: (ctx) => {
-            const dir = join(ctx.appDir, name);
-            const cfg = `/// <reference types="vitest" />
+    params: [],
+    steps: () => [
+      // Step 1: Create vite project in temp dir, then move files into appDir
+      {
+        label: 'Scaffold Vite + React + TS',
+        run: (ctx) => {
+          try {
+            // If package.json already has vite, skip scaffold
+            const pkgPath = join(ctx.appDir, 'package.json');
+            if (existsSync(pkgPath)) {
+              const pkg = JSON.parse(readFileSync(pkgPath, 'utf-8'));
+              if (pkg.devDependencies?.vite || pkg.dependencies?.vite) {
+                return { ok: true, output: 'Vite already present, skipping scaffold' };
+              }
+            }
+            // Create in temp subdir then move contents up
+            execSync(
+              `npm create vite@latest __init_tmp__ -- --template react-ts 2>&1 && cp -rn __init_tmp__/* __init_tmp__/.* . 2>/dev/null; rm -rf __init_tmp__`,
+              { cwd: ctx.appDir, encoding: 'utf-8', timeout: 60_000, stdio: ['pipe', 'pipe', 'pipe'] }
+            );
+            return { ok: true, output: 'Vite + React + TS scaffolded' };
+          } catch (e: any) {
+            return { ok: false, output: 'Vite scaffold failed: ' + ((e.stderr || '') + (e.stdout || '')).slice(0, 500) };
+          }
+        },
+      },
+      shellStep('Install deps', () => 'npm install 2>&1', { timeout: 120_000 }),
+      // Step 2: shadcn — needs vite.config + deps present. Use --force to skip preflight
+      shellStep('Init shadcn/ui', () =>
+        'npx shadcn@latest init --preset b0 --template vite -y --force 2>&1 || npx shadcn@latest init -y --force 2>&1 || echo "shadcn init skipped (run manually)"',
+        { timeout: 120_000 }
+      ),
+      shellStep('Install vitest + testing-library', () =>
+        'npm install -D vitest @testing-library/react @testing-library/jest-dom jsdom 2>&1',
+        { timeout: 60_000 }
+      ),
+      {
+        label: 'Create vitest config',
+        run: (ctx) => {
+          const cfg = `/// <reference types="vitest" />
 import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
 import path from 'path';
@@ -506,17 +520,16 @@ export default defineConfig({
   },
 });
 `;
-            writeFileSync(join(dir, 'vitest.config.ts'), cfg, 'utf-8');
-            writeFileSync(join(dir, 'src', 'test-setup.ts'),
-              `import '@testing-library/jest-dom';\n`, 'utf-8');
-            return { ok: true, output: 'Created vitest.config.ts + test-setup.ts', filesCreated: ['vitest.config.ts', 'src/test-setup.ts'] };
-          },
+          writeFileSync(join(ctx.appDir, 'vitest.config.ts'), cfg, 'utf-8');
+          const setupDir = join(ctx.appDir, 'src');
+          if (!existsSync(setupDir)) mkdirSync(setupDir, { recursive: true });
+          writeFileSync(join(setupDir, 'test-setup.ts'),
+            `import '@testing-library/jest-dom';\n`, 'utf-8');
+          return { ok: true, output: 'Created vitest.config.ts + test-setup.ts', filesCreated: ['vitest.config.ts', 'src/test-setup.ts'] };
         },
-        shellStep('Verify tests run', (ctx) =>
-          `cd ${name} && npx vitest --run 2>&1 || true`
-        ),
-      ];
-    },
+      },
+      shellStep('Verify tests run', () => 'npx vitest --run 2>&1 || true'),
+    ],
   },
 ];
 

@@ -106,14 +106,29 @@ export function startUiServer(config: ToolerConfig): void {
     res.json(MACHINE_DEFINITION);
   });
 
+  // ── Helper: get ToolRegistry scoped to a project ────────
+  // Caches per-project registries so we don't re-create each call
+  const projectTools = new Map<string, ToolRegistry>();
+
+  function getToolsForProject(projectId?: string): ToolRegistry {
+    if (!projectId) return tools; // default
+    const projectDir = join(config.workspaceDir, projectId);
+    if (!projectTools.has(projectId)) {
+      projectTools.set(projectId, new ToolRegistry({ ...config, appDir: projectDir }));
+    }
+    return projectTools.get(projectId)!;
+  }
+
   // ── API: tools ──────────────────────────────────────────
   app.get('/api/tools', (_req, res) => {
     res.json({ tools: tools.listTools() });
   });
 
   app.post('/api/tools/:id', async (req, res) => {
-    // tool IDs like "test.run" — dots are fine in Express params
-    const result = await tools.exec(req.params.id, req.body || {});
+    // X-Project header or ?project= query selects target project
+    const projectId = (req.headers['x-project'] as string) || (req.query.project as string) || '';
+    const t = getToolsForProject(projectId || undefined);
+    const result = await t.exec(req.params.id, req.body || {});
     res.json(result);
   });
 
@@ -139,14 +154,12 @@ export function startUiServer(config: ToolerConfig): void {
   });
 
   app.post('/api/self/run', async (req, res) => {
-    // Run a tool/recipe targeting tooler's own source
     const { toolId, params } = req.body;
     const toolerDir = join(config.workspaceDir, '..', 'tooler');
-    // Override appDir for this execution
-    const selfConfig = { ...config, appDir: toolerDir };
-    const { ToolRegistry: SelfTools } = await import('./tools.js');
-    const selfTools = new SelfTools(selfConfig);
-    const result = await selfTools.exec(toolId, params || {});
+    if (!projectTools.has('__self__')) {
+      projectTools.set('__self__', new ToolRegistry({ ...config, appDir: toolerDir }));
+    }
+    const result = await projectTools.get('__self__')!.exec(toolId, params || {});
     res.json(result);
   });
 
@@ -290,6 +303,7 @@ function dashboardHtml(): string {
     <span class="text-base font-bold text-accent">⚡ TDD Tooler</span>
     <span id="status" class="px-2 py-0.5 rounded text-[10px] font-bold uppercase bg-gray-700 text-gray-300">connecting</span>
     <span class="text-[10px] text-muted">Tasks: <span id="taskCount" class="text-gray-300">0/0</span></span>
+    <span class="text-[10px] text-muted">Project: <span id="activeProjectLabel" class="text-gray-300">none</span></span>
   </div>
   <div class="flex items-center gap-2">
     <button onclick="stopTask()" class="px-2 py-1 rounded text-[10px] bg-fail/20 text-fail hover:bg-fail/30 font-bold">⏹ STOP</button>
@@ -545,7 +559,7 @@ function renderProjects() {
     const icon = p.hasplan ? '📋' : '📁';
     const progress = p.tasksTotal > 0 ? ' (' + p.tasksDone + '/' + p.tasksTotal + ')' : '';
     el.innerHTML = '<span>' + icon + '</span><div class="flex-1 min-w-0"><div class="text-xs font-bold truncate">' + esc(p.name) + '</div><div class="text-[9px] text-muted truncate">' + p.id + progress + '</div></div>';
-    el.onclick = () => { S.activeProject = p.id; renderProjects(); };
+    el.onclick = () => { S.activeProject = p.id; renderProjects(); document.getElementById('activeProjectLabel').textContent = p.name || p.id; };
     c.appendChild(el);
   }
 }
@@ -689,9 +703,12 @@ async function runTool(toolId) {
   });
 
   try {
+    const headers = { 'Content-Type': 'application/json' };
+    // Send active project so server runs in correct dir
+    if (S.activeProject) headers['X-Project'] = S.activeProject;
     const res = await fetch('/api/tools/' + toolId, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers,
       body: JSON.stringify(params),
     });
     const result = await res.json();
@@ -728,9 +745,11 @@ async function sendChat() {
   addChatMessage('assistant', '⏳ Thinking...');
 
   try {
+    const chatHeaders = { 'Content-Type': 'application/json' };
+    if (S.activeProject) chatHeaders['X-Project'] = S.activeProject;
     const res = await fetch('/api/tools/model.chat', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: chatHeaders,
       body: JSON.stringify({ prompt }),
     });
     const result = await res.json();

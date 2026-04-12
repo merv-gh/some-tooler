@@ -11,6 +11,7 @@ services:
       - ./plan:/workspace/plan
       - ./logs:/workspace/logs
       - ./tooler/src:/workspace/tooler/src
+      - ./.claude:/workspace/.claude:ro
       - tooler_node_modules:/workspace/tooler/node_modules
     environment:
       - OLLAMA_URL=http://host.docker.internal:11434
